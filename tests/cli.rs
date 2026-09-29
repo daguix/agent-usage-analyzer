@@ -2,7 +2,7 @@ use std::process::Command;
 
 #[test]
 fn report_matches_fixture_totals() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
             "--rollouts",
@@ -26,7 +26,7 @@ fn report_matches_fixture_totals() {
 
 #[test]
 fn report_can_aggregate_the_entire_range() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
             "--rollouts",
@@ -47,7 +47,7 @@ fn report_can_aggregate_the_entire_range() {
     assert_eq!(rows[0]["total_tokens"], 465);
     assert!(rows[0].get("duration_samples").is_none());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
             "--rollouts",
@@ -69,7 +69,7 @@ fn report_can_aggregate_the_entire_range() {
 
 #[test]
 fn latency_view_groups_by_model() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "latency",
             "--rollouts",
@@ -95,7 +95,7 @@ fn latency_view_groups_by_model() {
 
 #[test]
 fn latency_view_aggregates_the_entire_range() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "latency",
             "--rollouts",
@@ -122,7 +122,7 @@ fn latency_view_aggregates_the_entire_range() {
 
 #[test]
 fn workflow_defaults_to_all_periods() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "workflow",
             "--rollouts",
@@ -152,7 +152,7 @@ fn workflow_defaults_to_all_periods() {
 
 #[test]
 fn workflow_groups_by_day_and_model() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "workflow",
             "--rollouts",
@@ -182,7 +182,7 @@ fn workflow_groups_by_day_and_model() {
 
 #[test]
 fn report_groups_usage_by_effort() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
             "--rollouts",
@@ -206,7 +206,7 @@ fn report_groups_usage_by_effort() {
 
 #[test]
 fn report_groups_usage_by_model_and_effort() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
             "--rollouts",
@@ -230,7 +230,7 @@ fn report_groups_usage_by_model_and_effort() {
 
 #[test]
 fn report_emits_telemetry_json_with_structured_dimensions() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
             "--rollouts",
@@ -250,8 +250,8 @@ fn report_emits_telemetry_json_with_structured_dimensions() {
         String::from_utf8_lossy(&output.stderr)
     );
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(document["schema_version"], 1);
-    assert_eq!(document["event_type"], "codex.usage.report");
+    assert_eq!(document["schema_version"], 2);
+    assert_eq!(document["event_type"], "agent.usage.report");
     assert_eq!(document["window"]["start"], "2026-09-22T08:00:02Z");
     assert_eq!(document["window"]["end"], "2026-09-22T09:00:01Z");
     assert_eq!(document["aggregation"]["period"], "all");
@@ -274,7 +274,7 @@ fn report_emits_telemetry_json_with_structured_dimensions() {
 
 #[test]
 fn csv_has_one_header() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "--rollouts",
             "tests/fixtures/rollouts",
@@ -292,7 +292,7 @@ fn csv_has_one_header() {
 
 #[test]
 fn status_shows_reasoning_output_tokens() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "status",
             "--rollouts",
@@ -312,7 +312,7 @@ fn status_shows_reasoning_output_tokens() {
 
 #[test]
 fn breakdown_last_emits_json() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "breakdown",
             "--rollouts",
@@ -344,7 +344,7 @@ fn breakdown_last_emits_json() {
 
 #[test]
 fn breakdown_without_range_analyzes_everything() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "breakdown",
             "--rollouts",
@@ -366,7 +366,7 @@ fn breakdown_without_range_analyzes_everything() {
 
 #[test]
 fn breakdown_applies_start_and_end() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "breakdown",
             "--rollouts",
@@ -387,7 +387,7 @@ fn breakdown_applies_start_and_end() {
 
 #[test]
 fn breakdown_emits_structured_paths_for_real_tool_activity() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "breakdown",
             "--rollouts",
@@ -419,7 +419,7 @@ fn breakdown_emits_structured_paths_for_real_tool_activity() {
 
 #[test]
 fn breakdown_table_renders_family_kind_and_source_levels() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "breakdown",
             "--rollouts",
@@ -442,7 +442,7 @@ fn breakdown_table_renders_family_kind_and_source_levels() {
 
 #[test]
 fn claude_report_deduplicates_streamed_and_relocated_messages() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
             "--source",
@@ -479,7 +479,7 @@ fn claude_report_deduplicates_streamed_and_relocated_messages() {
 
 #[test]
 fn claude_workflow_counts_subagent_turns_in_parallel() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "workflow",
             "--source",
@@ -503,7 +503,7 @@ fn claude_workflow_counts_subagent_turns_in_parallel() {
 
 #[test]
 fn all_sources_combine_codex_and_claude_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
             "--source",
@@ -526,7 +526,7 @@ fn all_sources_combine_codex_and_claude_usage() {
 
 #[test]
 fn status_rejects_claude_source() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args(["status", "--source", "claude"])
         .output()
         .expect("binary should run");

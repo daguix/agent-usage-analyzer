@@ -18,7 +18,7 @@ type DateRange = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "codex-usage-analyzer",
+    name = "agent-usage-analyzer",
     version,
     about = "Analyze Codex and Claude Code token usage without a database",
     args_conflicts_with_subcommands = true
@@ -49,20 +49,20 @@ struct SourceArgs {
     #[arg(
         long,
         value_enum,
-        env = "CODEX_USAGE_SOURCE",
+        env = "AGENT_USAGE_SOURCE",
         default_value_t = SourceArg::Codex,
         help = "Session logs to analyze"
     )]
     source: SourceArg,
     #[arg(
         long,
-        env = "CODEX_USAGE_ROLLOUTS",
+        env = "AGENT_USAGE_ROLLOUTS",
         help = "Directory containing rollout-*.jsonl files"
     )]
     rollouts: Option<PathBuf>,
     #[arg(
         long,
-        env = "CODEX_USAGE_CLAUDE_PROJECTS",
+        env = "AGENT_USAGE_CLAUDE_PROJECTS",
         help = "Directory containing Claude Code project session files"
     )]
     claude_projects: Option<PathBuf>,

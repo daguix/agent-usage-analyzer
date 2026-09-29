@@ -1,11 +1,12 @@
-# Codex Usage Analyzer
+# Agent Usage Analyzer
 
-A fast, database-free Rust CLI for analyzing [OpenAI Codex CLI](https://github.com/openai/codex)
-usage, token consumption, estimated costs, latency, and context composition
-from local `rollout-*.jsonl` session files. It can also analyze
-[Claude Code](https://claude.com/claude-code) session transcripts.
+A fast, database-free Rust CLI for analyzing coding-agent usage, token
+consumption, estimated costs, latency, and context composition from local
+session files. It supports [OpenAI Codex CLI](https://github.com/openai/codex)
+`rollout-*.jsonl` files and [Claude Code](https://claude.com/claude-code)
+session transcripts.
 
-Fast and lightweight: rollout files are processed in parallel, with no database
+Fast and lightweight: session files are processed in parallel, with no database
 or background service required. The optimized Linux x86-64 binary is about
 3.9 MB.
 
@@ -37,47 +38,47 @@ writes, come from the
 cargo build --release
 ```
 
-The binary is written to `target/release/codex-usage-analyzer`.
+The binary is written to `target/release/agent-usage-analyzer`.
 
 ## Usage
 
 ```bash
 # Today's usage
-codex-usage-analyzer --today
+agent-usage-analyzer --today
 
 # Last seven days, broken down by model
-codex-usage-analyzer --last 7d --by model
+agent-usage-analyzer --last 7d --by model
 
 # Last seven days, broken down by model and reasoning effort
-codex-usage-analyzer --last 7d --by model,effort
+agent-usage-analyzer --last 7d --by model,effort
 
 # JSON for all available rollouts
-codex-usage-analyzer report --last all --format json
+agent-usage-analyzer report --last all --format json
 
 # Versioned JSON envelope for telemetry ingestion
-codex-usage-analyzer report --last 1h --by model,effort,directory,session --format telemetry-json
+agent-usage-analyzer report --last 1h --by model,effort,directory,session --format telemetry-json
 
 # Latest captured usage snapshot
-codex-usage-analyzer status
+agent-usage-analyzer status
 
 # Latency statistics for the last seven days, broken down by model
-codex-usage-analyzer latency --last 7d --by model
+agent-usage-analyzer latency --last 7d --by model
 
 # Agent-hours and effective parallelism over seven days
-codex-usage-analyzer workflow --last 7d
+agent-usage-analyzer workflow --last 7d
 
 # Daily results broken down by model
-codex-usage-analyzer workflow --last 7d --group day --by model
+agent-usage-analyzer workflow --last 7d --group day --by model
 
 # Estimated composition of input and cached-input context over seven days
-codex-usage-analyzer breakdown --last 7d
+agent-usage-analyzer breakdown --last 7d
 
 # All available rollouts
-codex-usage-analyzer breakdown
+agent-usage-analyzer breakdown
 ```
 
 The default rollout directory is `~/.codex/sessions`. Override it with
-`--rollouts PATH` or `CODEX_USAGE_ROLLOUTS`.
+`--rollouts PATH` or `AGENT_USAGE_ROLLOUTS`.
 
 Supported report options include:
 
@@ -145,20 +146,20 @@ reported as a third, distinct result category.
 
 ```bash
 # Claude Code usage over seven days, broken down by model
-codex-usage-analyzer report --source claude --last 7d --by model
+agent-usage-analyzer report --source claude --last 7d --by model
 
 # Codex and Claude Code combined
-codex-usage-analyzer report --source all --last 7d --by model
+agent-usage-analyzer report --source all --last 7d --by model
 
 # Claude Code agent-hours, including subagents
-codex-usage-analyzer workflow --source claude --last 7d --group day
+agent-usage-analyzer workflow --source claude --last 7d --group day
 ```
 
-`--source codex|claude|all` (or `CODEX_USAGE_SOURCE`) selects the session logs
+`--source codex|claude|all` (or `AGENT_USAGE_SOURCE`) selects the session logs
 used by `report`, `latency`, and `workflow`; the default is `codex`. Claude Code
 transcripts are read from `$CLAUDE_CONFIG_DIR/projects`, or
 `~/.claude/projects` when that variable is unset. Override the location with
-`--claude-projects PATH` or `CODEX_USAGE_CLAUDE_PROJECTS`. Subagent transcripts
+`--claude-projects PATH` or `AGENT_USAGE_CLAUDE_PROJECTS`. Subagent transcripts
 are included.
 
 Claude Code writes one transcript line per content block, so usage is

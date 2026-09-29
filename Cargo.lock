@@ -3,6 +3,21 @@
 version = 4
 
 [[package]]
+name = "agent-usage-analyzer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "csv",
+ "rayon",
+ "serde",
+ "serde_json",
+ "walkdir",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -158,21 +173,6 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
-
-[[package]]
-name = "codex-usage-analyzer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "chrono-tz",
- "clap",
- "csv",
- "rayon",
- "serde",
- "serde_json",
- "walkdir",
-]
 
 [[package]]
 name = "colorchoice"

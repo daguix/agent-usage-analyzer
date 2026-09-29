@@ -238,11 +238,11 @@ pub fn render_telemetry(
         })
         .collect();
     Ok(serde_json::to_string_pretty(&TelemetryReport {
-        schema_version: 1,
-        event_type: "codex.usage.report",
+        schema_version: 2,
+        event_type: "agent.usage.report",
         generated_at: Utc::now(),
         source: TelemetrySource {
-            name: "codex-usage-analyzer",
+            name: "agent-usage-analyzer",
             version: env!("CARGO_PKG_VERSION"),
         },
         window: TelemetryWindow {
