@@ -13,9 +13,9 @@ or background service required. The optimized Linux x86-64 binary is about
 ## Features
 
 - Track Codex token usage and estimated API costs over custom time ranges
-- Group results by model, reasoning effort, directory, or session
+- Group results by model, reasoning effort, directory, git branch, turn origin, or session
 - Inspect end-to-end latency, time to first token (TTFT), medians, and p95
-- Measure agent-hours and effective parallelism from completed turns
+- Measure agent-hours, effective parallelism, and time spent in tools from completed turns
 - Analyze context composition and identify token-heavy tools and content
 - Export reports as human-readable tables, JSON, or CSV
 - Export versioned, structured JSON for telemetry ingestion
@@ -84,7 +84,7 @@ Supported report options include:
 
 - `--today`, `--last`, `--from`, and `--to`
 - `--group all|day|week|month` (default: `all`)
-- `--by model|effort|directory|session`, with comma-separated dimensions such as `--by model,effort`
+- `--by model|effort|directory|branch|origin|session`, with comma-separated dimensions such as `--by model,effort`
 - `--source codex|claude|all`
 - `--format table|json|csv|telemetry-json`
 - `--timezone IANA_NAME`
@@ -104,14 +104,24 @@ human-readable durations. Older rollouts may not contain latency measurements,
 so missing values are excluded from the sample counts and aggregates.
 
 `workflow` accepts the same range, `--group all|day|week|month`,
-`--by model|effort|directory|session`, timezone, and `--format table|json|csv`
-options as `latency`. The default grouping is `all`. Agent-hours sum the recorded
+`--by model|effort|directory|branch|origin|session`, timezone, and
+`--format table|json|csv` options as `latency`. The default grouping is `all`. Agent-hours sum the recorded
 durations of completed turns within each period and group. Active wall-hours
 measure the union of their time intervals, counting overlaps once within each
 group. Effective parallelism is agent-hours divided by active wall-hours.
 Intervals crossing a day or range boundary are split or clipped at that boundary.
 Turns without a recorded duration are excluded. These measures describe recorded
 agent activity, not verified human time saved.
+For Claude Code, tool-hours measure the time between each tool call and its
+result, counting concurrent tool calls once per turn, and tool share is
+tool-hours divided by agent-hours; the remainder is spent generating model
+output. Codex rollouts do not record tool timings, so these columns show `-`.
+
+`branch` is the git branch recorded with each message (Claude Code) or at the
+start of the session (Codex). `origin` describes what started a turn: for Claude
+Code, `human`, `task_notification` (a background task finished), `peer` (a
+message from another agent), `system`, or `subagent`; for Codex, `subagent` for
+subagent sessions and `<unknown>` otherwise.
 
 `breakdown` reads context items but does not store them. It allocates the exact
 reported input, cached-input, output, and reasoning-output totals across

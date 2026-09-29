@@ -225,6 +225,8 @@ enum GroupArg {
     Model,
     Effort,
     Directory,
+    Branch,
+    Origin,
     Session,
 }
 
@@ -245,9 +247,26 @@ impl GroupArg {
             Self::Model => "model",
             Self::Effort => "effort",
             Self::Directory => "directory",
+            Self::Branch => "branch",
+            Self::Origin => "origin",
             Self::Session => "session",
         }
     }
+
+    fn dimension(self) -> GroupBy {
+        match self {
+            Self::Model => GroupBy::Model,
+            Self::Effort => GroupBy::Effort,
+            Self::Directory => GroupBy::Directory,
+            Self::Branch => GroupBy::Branch,
+            Self::Origin => GroupBy::Origin,
+            Self::Session => GroupBy::Session,
+        }
+    }
+}
+
+fn group_by(args: &[GroupArg]) -> Vec<GroupBy> {
+    args.iter().copied().map(GroupArg::dimension).collect()
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -292,16 +311,7 @@ fn run_workflow(args: WorkflowArgs) -> Result<()> {
             PeriodArg::Week => PeriodGroup::Week,
             PeriodArg::Month => PeriodGroup::Month,
         },
-        &args
-            .by
-            .iter()
-            .map(|value| match value {
-                GroupArg::Model => GroupBy::Model,
-                GroupArg::Effort => GroupBy::Effort,
-                GroupArg::Directory => GroupBy::Directory,
-                GroupArg::Session => GroupBy::Session,
-            })
-            .collect::<Vec<_>>(),
+        &group_by(&args.by),
     );
     let output = workflow::render(
         &rows,
@@ -337,16 +347,7 @@ fn run_latency(args: LatencyArgs) -> Result<()> {
             PeriodArg::Week => PeriodGroup::Week,
             PeriodArg::Month => PeriodGroup::Month,
         },
-        &args
-            .by
-            .iter()
-            .map(|value| match value {
-                GroupArg::Model => GroupBy::Model,
-                GroupArg::Effort => GroupBy::Effort,
-                GroupArg::Directory => GroupBy::Directory,
-                GroupArg::Session => GroupBy::Session,
-            })
-            .collect::<Vec<_>>(),
+        &group_by(&args.by),
         timezone,
     );
     let output = latency::render(
@@ -655,16 +656,7 @@ fn run_report(args: ReportArgs) -> Result<()> {
             PeriodArg::Week => PeriodGroup::Week,
             PeriodArg::Month => PeriodGroup::Month,
         },
-        &args
-            .by
-            .iter()
-            .map(|value| match value {
-                GroupArg::Model => GroupBy::Model,
-                GroupArg::Effort => GroupBy::Effort,
-                GroupArg::Directory => GroupBy::Directory,
-                GroupArg::Session => GroupBy::Session,
-            })
-            .collect::<Vec<_>>(),
+        &group_by(&args.by),
         timezone,
         &Pricing::default(),
     );

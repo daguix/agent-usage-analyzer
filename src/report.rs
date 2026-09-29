@@ -21,6 +21,8 @@ pub enum GroupBy {
     Model,
     Effort,
     Directory,
+    Branch,
+    Origin,
     Session,
 }
 
@@ -137,6 +139,8 @@ pub fn aggregate(
                     GroupBy::Model => event.model.as_deref(),
                     GroupBy::Effort => event.effort.as_deref(),
                     GroupBy::Directory => event.directory.as_deref(),
+                    GroupBy::Branch => event.branch.as_deref(),
+                    GroupBy::Origin => event.origin.as_deref(),
                     GroupBy::Session => event.session_id.as_deref(),
                 }
                 .unwrap_or("<unknown>")
@@ -205,6 +209,8 @@ impl GroupBy {
             Self::Model => "model",
             Self::Effort => "effort",
             Self::Directory => "directory",
+            Self::Branch => "branch",
+            Self::Origin => "origin",
             Self::Session => "session",
         }
     }

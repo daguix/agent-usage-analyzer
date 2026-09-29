@@ -15,6 +15,14 @@ pub struct WorkflowRow {
     pub agent_hours: f64,
     pub wall_clock_active_hours: f64,
     pub effective_parallelism: f64,
+    pub tool_hours: Option<f64>,
+    pub tool_share: Option<f64>,
+}
+
+#[derive(Default)]
+struct Group {
+    intervals: Vec<(DateTime<Utc>, DateTime<Utc>)>,
+    tool_ms: Option<i64>,
 }
 
 pub fn aggregate(
@@ -25,7 +33,7 @@ pub fn aggregate(
     period: PeriodGroup,
     by: &[GroupBy],
 ) -> Vec<WorkflowRow> {
-    let mut groups = BTreeMap::<(String, String), Vec<(DateTime<Utc>, DateTime<Utc>)>>::new();
+    let mut groups = BTreeMap::<(String, String), Group>::new();
     for event in events {
         let Some(duration_ms) = event
             .duration_ms
@@ -50,6 +58,8 @@ pub fn aggregate(
                         GroupBy::Model => event.model.as_deref(),
                         GroupBy::Effort => event.effort.as_deref(),
                         GroupBy::Directory => event.directory.as_deref(),
+                        GroupBy::Branch => event.branch.as_deref(),
+                        GroupBy::Origin => event.origin.as_deref(),
                         GroupBy::Session => event.session_id.as_deref(),
                     }
                     .unwrap_or("<unknown>")
@@ -72,38 +82,57 @@ pub fn aggregate(
                 .to_string(),
                 PeriodGroup::Month => local_day.format("%Y-%m").to_string(),
             };
-            groups
-                .entry((period_key, group.clone()))
-                .or_default()
-                .push((cursor, segment_end));
+            let entry = groups.entry((period_key, group.clone())).or_default();
+            entry.intervals.push((cursor, segment_end));
+            if let Some(tools) = &event.tool_intervals {
+                let overlap: i64 = tools
+                    .iter()
+                    .map(|(start, end)| {
+                        (*end.min(&segment_end) - *start.max(&cursor))
+                            .num_milliseconds()
+                            .max(0)
+                    })
+                    .sum();
+                *entry.tool_ms.get_or_insert(0) += overlap;
+            }
             cursor = segment_end;
         }
     }
     groups
         .into_iter()
-        .map(|((period, group), mut intervals)| {
-            let agent_ms: i64 = intervals
-                .iter()
-                .map(|(start, end)| (*end - *start).num_milliseconds())
-                .sum();
-            intervals.sort_unstable();
-            let mut wall_ms = 0_i64;
-            let mut active_end = None;
-            for (start, end) in intervals {
-                let uncovered_start = active_end.map_or(start, |previous| start.max(previous));
-                if end > uncovered_start {
-                    wall_ms += (end - uncovered_start).num_milliseconds();
+        .map(
+            |(
+                (period, group),
+                Group {
+                    mut intervals,
+                    tool_ms,
+                },
+            )| {
+                let agent_ms: i64 = intervals
+                    .iter()
+                    .map(|(start, end)| (*end - *start).num_milliseconds())
+                    .sum();
+                intervals.sort_unstable();
+                let mut wall_ms = 0_i64;
+                let mut active_end = None;
+                for (start, end) in intervals {
+                    let uncovered_start = active_end.map_or(start, |previous| start.max(previous));
+                    if end > uncovered_start {
+                        wall_ms += (end - uncovered_start).num_milliseconds();
+                    }
+                    active_end = Some(active_end.map_or(end, |previous| end.max(previous)));
                 }
-                active_end = Some(active_end.map_or(end, |previous| end.max(previous)));
-            }
-            WorkflowRow {
-                period,
-                group,
-                agent_hours: agent_ms as f64 / 3_600_000.0,
-                wall_clock_active_hours: wall_ms as f64 / 3_600_000.0,
-                effective_parallelism: agent_ms as f64 / wall_ms as f64,
-            }
-        })
+                WorkflowRow {
+                    period,
+                    group,
+                    agent_hours: agent_ms as f64 / 3_600_000.0,
+                    wall_clock_active_hours: wall_ms as f64 / 3_600_000.0,
+                    effective_parallelism: agent_ms as f64 / wall_ms as f64,
+                    tool_hours: tool_ms.map(|tool_ms| tool_ms as f64 / 3_600_000.0),
+                    tool_share: tool_ms.map(|tool_ms| tool_ms as f64 / agent_ms as f64),
+                }
+            },
+        )
         .collect()
 }
 
@@ -133,6 +162,8 @@ pub fn render(rows: &[WorkflowRow], format: ReportFormat) -> Result<String> {
                 "agent_hours",
                 "wall_clock_active_hours",
                 "effective_parallelism",
+                "tool_hours",
+                "tool_share",
             ])?;
             for row in rows {
                 writer.serialize(row)?;
@@ -148,8 +179,10 @@ pub fn render(rows: &[WorkflowRow], format: ReportFormat) -> Result<String> {
                 "Agent-hours",
                 "Active wall-hours",
                 "Effective parallelism",
+                "Tool-hours",
+                "Tool share",
             ];
-            let values: Vec<[String; 5]> = rows
+            let values: Vec<[String; 7]> = rows
                 .iter()
                 .map(|row| {
                     [
@@ -158,6 +191,12 @@ pub fn render(rows: &[WorkflowRow], format: ReportFormat) -> Result<String> {
                         format!("{:.3}", row.agent_hours),
                         format!("{:.3}", row.wall_clock_active_hours),
                         format!("{:.2}x", row.effective_parallelism),
+                        row.tool_hours
+                            .map_or_else(|| "-".to_owned(), |hours| format!("{hours:.3}")),
+                        row.tool_share.map_or_else(
+                            || "-".to_owned(),
+                            |share| format!("{:.1}%", share * 100.0),
+                        ),
                     ]
                 })
                 .collect();
@@ -167,7 +206,7 @@ pub fn render(rows: &[WorkflowRow], format: ReportFormat) -> Result<String> {
                     widths[index] = widths[index].max(value.chars().count());
                 }
             }
-            let format_row = |row: &[&str; 5]| {
+            let format_row = |row: &[&str; 7]| {
                 row.iter()
                     .enumerate()
                     .map(|(index, value)| {
@@ -264,6 +303,31 @@ mod tests {
     }
 
     #[test]
+    fn tool_time_is_split_across_days_and_clipped() {
+        let at = |value: &str| DateTime::parse_from_rfc3339(value).unwrap().to_utc();
+        let turn = LatencyEvent {
+            tool_intervals: Some(vec![
+                (at("2026-09-22T21:00:00Z"), at("2026-09-22T23:00:00Z")),
+                (at("2026-09-23T00:30:00Z"), at("2026-09-23T01:00:00Z")),
+            ]),
+            ..event("2026-09-23T02:00:00Z", 14_400_000)
+        };
+        let rows = aggregate(
+            [turn, event("2026-09-22T12:00:00Z", 3_600_000)],
+            Some(at("2026-09-22T00:00:00Z")),
+            Some(at("2026-09-23T00:45:00Z")),
+            chrono_tz::UTC,
+            PeriodGroup::Day,
+            &[],
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].tool_hours, Some(1.0));
+        assert_eq!(rows[0].tool_share, Some(1.0 / 3.0));
+        assert_eq!(rows[1].tool_hours, Some(0.25));
+        assert_eq!(rows[1].tool_share, Some(1.0 / 3.0));
+    }
+
+    #[test]
     fn table_keeps_numeric_columns_aligned_with_long_groups() {
         let rows = vec![
             WorkflowRow {
@@ -272,6 +336,8 @@ mod tests {
                 agent_hours: 2.0,
                 wall_clock_active_hours: 1.0,
                 effective_parallelism: 2.0,
+                tool_hours: None,
+                tool_share: None,
             },
             WorkflowRow {
                 period: "All".to_owned(),
@@ -279,6 +345,8 @@ mod tests {
                 agent_hours: 3.0,
                 wall_clock_active_hours: 2.0,
                 effective_parallelism: 1.5,
+                tool_hours: Some(1.5),
+                tool_share: Some(0.5),
             },
         ];
         let table = render(&rows, ReportFormat::Table).unwrap();

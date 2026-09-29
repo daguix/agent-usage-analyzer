@@ -29,13 +29,18 @@ struct Turn {
     model: Option<String>,
     effort: Option<String>,
     directory: Option<String>,
+    branch: Option<String>,
+    origin: Option<String>,
     session_id: Option<String>,
+    tool_starts: HashMap<String, DateTime<Utc>>,
+    tool_intervals: Vec<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
 impl Turn {
     fn finish(self) -> Option<LatencyEvent> {
         let ended_at = self.ended_at?;
         let duration_ms = u64::try_from((ended_at - self.started_at).num_milliseconds()).ok()?;
+        let tool_intervals = merge_intervals(self.tool_intervals, self.started_at, ended_at);
         Some(LatencyEvent {
             captured_at: ended_at,
             duration_ms: Some(duration_ms),
@@ -43,10 +48,34 @@ impl Turn {
             model: self.model,
             effort: self.effort,
             directory: self.directory,
+            branch: self.branch,
+            origin: self.origin,
             session_id: self.session_id,
             turn_id: self.id,
+            tool_intervals: Some(tool_intervals),
         })
     }
+}
+
+fn merge_intervals(
+    mut intervals: Vec<(DateTime<Utc>, DateTime<Utc>)>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
+    intervals.sort_unstable();
+    let mut merged = Vec::<(DateTime<Utc>, DateTime<Utc>)>::new();
+    for (interval_start, interval_end) in intervals {
+        let interval_start = interval_start.max(start);
+        let interval_end = interval_end.min(end);
+        if interval_end <= interval_start {
+            continue;
+        }
+        match merged.last_mut() {
+            Some(last) if interval_start <= last.1 => last.1 = last.1.max(interval_end),
+            _ => merged.push((interval_start, interval_end)),
+        }
+    }
+    merged
 }
 
 pub fn scan_projects(root: &Path) -> Result<ScanResult> {
@@ -150,15 +179,33 @@ fn parse_value(
                 model: None,
                 effort: None,
                 directory: string(value, "cwd"),
+                branch: string(value, "gitBranch"),
+                origin: sidechain_origin(value).or_else(|| string(value, "turnOrigin")),
                 session_id: string(value, "sessionId"),
+                tool_starts: HashMap::new(),
+                tool_intervals: Vec::new(),
             });
+        }
+        Some("user") => {
+            if let Some(turn) = turn.as_mut() {
+                for id in content_blocks(value, "tool_result", "tool_use_id") {
+                    if let Some(start) = turn.tool_starts.remove(id) {
+                        turn.tool_intervals.push((start, timestamp));
+                    }
+                }
+            }
         }
         Some("assistant") => {
             let message = value.get("message").unwrap_or(&Value::Null);
             let model = string(message, "model").filter(|model| model != "<synthetic>");
             let effort = string(value, "effort");
+            let origin = sidechain_origin(value)
+                .or_else(|| turn.as_ref().and_then(|turn| turn.origin.clone()));
             if let Some(turn) = turn.as_mut() {
                 turn.ended_at = Some(timestamp);
+                for id in content_blocks(value, "tool_use", "id") {
+                    turn.tool_starts.entry(id.to_owned()).or_insert(timestamp);
+                }
                 if model.is_some() {
                     turn.model.clone_from(&model);
                 }
@@ -175,7 +222,7 @@ fn parse_value(
             let Some(id) = string(message, "id").or_else(|| string(value, "uuid")) else {
                 return;
             };
-            let event = usage_event(value, tokens, timestamp, model, effort);
+            let event = usage_event(value, tokens, timestamp, model, effort, origin);
             keep_largest(usage, id, event, |event| event.output_tokens);
         }
         _ => {}
@@ -188,6 +235,7 @@ fn usage_event(
     captured_at: DateTime<Utc>,
     model: String,
     effort: Option<String>,
+    origin: Option<String>,
 ) -> UsageEvent {
     let uncached = number(tokens, "input_tokens");
     let cache_read = number(tokens, "cache_read_input_tokens");
@@ -216,15 +264,18 @@ fn usage_event(
         model: Some(model),
         effort,
         directory: string(value, "cwd"),
+        branch: string(value, "gitBranch"),
+        origin,
         session_id: string(value, "sessionId"),
         ..UsageEvent::default()
     }
 }
 
 fn is_prompt(value: &Value) -> bool {
-    if value.get("isMeta").and_then(Value::as_bool) == Some(true)
-        || value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
+    if value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
         || value.get("toolUseResult").is_some()
+        || (value.get("isMeta").and_then(Value::as_bool) == Some(true)
+            && value.get("turnOrigin").is_none())
     {
         return false;
     }
@@ -238,6 +289,25 @@ fn is_prompt(value: &Value) -> bool {
             .all(|block| block.get("type").and_then(Value::as_str) != Some("tool_result")),
         _ => false,
     }
+}
+
+fn sidechain_origin(value: &Value) -> Option<String> {
+    (value.get("isSidechain").and_then(Value::as_bool) == Some(true)).then(|| "subagent".to_owned())
+}
+
+fn content_blocks<'a>(
+    value: &'a Value,
+    kind: &'a str,
+    key: &'a str,
+) -> impl Iterator<Item = &'a str> + 'a {
+    value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(move |block| block.get("type").and_then(Value::as_str) == Some(kind))
+        .filter_map(move |block| block.get(key).and_then(Value::as_str))
 }
 
 fn string(value: &Value, key: &str) -> Option<String> {
@@ -306,6 +376,75 @@ mod tests {
         assert_eq!(event.reasoning_output_tokens, 3);
         assert_eq!(event.effort.as_deref(), Some("high"));
         assert_eq!(event.directory.as_deref(), Some("/tmp/p"));
+    }
+
+    #[test]
+    fn records_branch_origin_and_tool_time() {
+        let (usage, turns) = feed(&[
+            serde_json::json!({
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-09-22T10:00:00Z",
+                "gitBranch": "feature",
+                "turnOrigin": "task_notification",
+                "message": {"role": "user", "content": "done"}
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2026-09-22T10:00:02Z",
+                "gitBranch": "feature",
+                "message": {
+                    "id": "msg_1",
+                    "model": "claude-opus-5-5",
+                    "content": [
+                        {"type": "tool_use", "id": "a"},
+                        {"type": "tool_use", "id": "b"}
+                    ],
+                    "usage": {"output_tokens": 1}
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "timestamp": "2026-09-22T10:00:05Z",
+                "toolUseResult": {},
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "a"}]}
+            }),
+            serde_json::json!({
+                "type": "user",
+                "timestamp": "2026-09-22T10:00:07Z",
+                "toolUseResult": {},
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "b"}]}
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2026-09-22T10:00:10Z",
+                "message": {"id": "msg_2", "model": "claude-opus-5-5", "content": []}
+            }),
+            serde_json::json!({
+                "type": "user",
+                "uuid": "u2",
+                "timestamp": "2026-09-22T10:01:00Z",
+                "isMeta": true,
+                "turnOrigin": "peer",
+                "message": {"role": "user", "content": "hand-back"}
+            }),
+        ]);
+        assert_eq!(usage["msg_1"].branch.as_deref(), Some("feature"));
+        assert_eq!(usage["msg_1"].origin.as_deref(), Some("task_notification"));
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].branch.as_deref(), Some("feature"));
+        assert_eq!(turns[0].origin.as_deref(), Some("task_notification"));
+        let tools = turns[0].tool_intervals.as_ref().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!((tools[0].1 - tools[0].0).num_seconds(), 5);
+    }
+
+    #[test]
+    fn sidechain_messages_are_attributed_to_subagents() {
+        let mut line = assistant("2026-09-22T10:00:01Z", 7);
+        line["isSidechain"] = serde_json::json!(true);
+        let (usage, _) = feed(&[line]);
+        assert_eq!(usage["msg_1"].origin.as_deref(), Some("subagent"));
     }
 
     #[test]

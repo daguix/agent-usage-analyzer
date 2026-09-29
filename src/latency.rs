@@ -63,6 +63,8 @@ pub fn aggregate(
                         GroupBy::Model => event.model.as_deref(),
                         GroupBy::Effort => event.effort.as_deref(),
                         GroupBy::Directory => event.directory.as_deref(),
+                        GroupBy::Branch => event.branch.as_deref(),
+                        GroupBy::Origin => event.origin.as_deref(),
                         GroupBy::Session => event.session_id.as_deref(),
                     }
                     .unwrap_or("<unknown>")

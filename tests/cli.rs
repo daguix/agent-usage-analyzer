@@ -499,6 +499,39 @@ fn claude_workflow_counts_subagent_turns_in_parallel() {
     let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(rows[0]["agent_hours"], 35.0 / 3600.0);
     assert_eq!(rows[0]["wall_clock_active_hours"], 30.0 / 3600.0);
+    assert_eq!(rows[0]["tool_hours"], 2.0 / 3600.0);
+    assert_eq!(rows[0]["tool_share"], 2.0 / 35.0);
+}
+
+#[test]
+fn claude_report_groups_by_branch_and_origin() {
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
+        .args([
+            "report",
+            "--source",
+            "claude",
+            "--claude-projects",
+            "tests/fixtures/claude",
+            "--last",
+            "all",
+            "--by",
+            "branch,origin",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("binary should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 2);
+    assert_eq!(rows[0]["group"], "feature / human");
+    assert_eq!(rows[0]["total_tokens"], 2490);
+    assert_eq!(rows[1]["group"], "feature / subagent");
+    assert_eq!(rows[1]["total_tokens"], 15);
 }
 
 #[test]

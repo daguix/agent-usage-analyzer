@@ -27,6 +27,8 @@ pub struct UsageEvent {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub directory: Option<String>,
+    pub branch: Option<String>,
+    pub origin: Option<String>,
     pub session_id: Option<String>,
     pub codex_version: Option<String>,
 }
@@ -39,8 +41,11 @@ pub struct LatencyEvent {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub directory: Option<String>,
+    pub branch: Option<String>,
+    pub origin: Option<String>,
     pub session_id: Option<String>,
     pub turn_id: Option<String>,
+    pub tool_intervals: Option<Vec<(DateTime<Utc>, DateTime<Utc>)>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -70,6 +75,8 @@ struct Context {
     model: Option<String>,
     effort: Option<String>,
     directory: Option<String>,
+    branch: Option<String>,
+    origin: Option<String>,
     session_id: Option<String>,
     codex_version: Option<String>,
 }
@@ -170,6 +177,16 @@ fn parse_value(
             replace_string(&mut context.session_id, payload.get("id"));
             replace_string(&mut context.directory, payload.get("cwd"));
             replace_string(&mut context.codex_version, payload.get("cli_version"));
+            replace_string(
+                &mut context.branch,
+                payload.get("git").and_then(|git| git.get("branch")),
+            );
+            if payload
+                .get("source")
+                .is_some_and(|source| source.get("subagent").is_some())
+            {
+                context.origin = Some("subagent".to_owned());
+            }
         }
         "turn_context" => {
             replace_string(&mut context.model, payload.get("model"));
@@ -212,6 +229,8 @@ fn parse_value(
                 model: context.model.clone(),
                 effort: context.effort.clone(),
                 directory: context.directory.clone(),
+                branch: context.branch.clone(),
+                origin: context.origin.clone(),
                 session_id: context.session_id.clone(),
                 codex_version: context.codex_version.clone(),
             });
@@ -241,11 +260,14 @@ fn parse_value(
                 model: context.model.clone(),
                 effort: context.effort.clone(),
                 directory: context.directory.clone(),
+                branch: context.branch.clone(),
+                origin: context.origin.clone(),
                 session_id: context.session_id.clone(),
                 turn_id: payload
                     .get("turn_id")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
+                tool_intervals: None,
             });
         }
         _ => {}
@@ -307,7 +329,9 @@ mod tests {
         let mut events = Vec::new();
         let mut latencies = Vec::new();
         parse_value(
-            &serde_json::json!({"type":"session_meta","payload":{"id":"s","cwd":"/tmp/p"}}),
+            &serde_json::json!({"type":"session_meta","payload":{
+                "id":"s","cwd":"/tmp/p","git":{"branch":"feature"},"source":{"subagent":{"other":"guardian"}}
+            }}),
             &mut context,
             &mut events,
             &mut latencies,
@@ -334,6 +358,8 @@ mod tests {
         assert_eq!(events[0].model.as_deref(), Some("gpt-5.2"));
         assert_eq!(events[0].effort.as_deref(), Some("high"));
         assert_eq!(events[0].session_id.as_deref(), Some("s"));
+        assert_eq!(events[0].branch.as_deref(), Some("feature"));
+        assert_eq!(events[0].origin.as_deref(), Some("subagent"));
     }
 
     #[test]
@@ -343,7 +369,7 @@ mod tests {
             effort: Some("high".to_owned()),
             directory: Some("/tmp/p".to_owned()),
             session_id: Some("s".to_owned()),
-            codex_version: None,
+            ..Context::default()
         };
         let mut events = Vec::new();
         let mut latencies = Vec::new();
