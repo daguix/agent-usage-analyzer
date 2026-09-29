@@ -18,6 +18,9 @@ pub struct UsageEvent {
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
+    pub cache_write_5m_tokens: u64,
+    pub cache_write_1h_tokens: u64,
+    pub speed: Option<String>,
     pub context_window: Option<u64>,
     pub primary_limit: Option<RateLimitWindow>,
     pub secondary_limit: Option<RateLimitWindow>,
@@ -200,6 +203,9 @@ fn parse_value(
                 cached_input_tokens: number(last, "cached_input_tokens"),
                 output_tokens: number(last, "output_tokens"),
                 reasoning_output_tokens: number(last, "reasoning_output_tokens"),
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
+                speed: None,
                 context_window: optional_number(info, "model_context_window"),
                 primary_limit: rate_limit_window(limits.get("primary")),
                 secondary_limit: rate_limit_window(limits.get("secondary")),
@@ -255,17 +261,17 @@ fn replace_string(target: &mut Option<String>, value: Option<&Value>) {
     }
 }
 
-fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|value| value.to_utc())
 }
 
-fn number(value: &Value, key: &str) -> u64 {
+pub(crate) fn number(value: &Value, key: &str) -> u64 {
     optional_number(value, key).unwrap_or(0)
 }
 
-fn optional_number(value: &Value, key: &str) -> Option<u64> {
+pub(crate) fn optional_number(value: &Value, key: &str) -> Option<u64> {
     value.get(key).and_then(|value| {
         value
             .as_u64()

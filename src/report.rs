@@ -44,6 +44,8 @@ pub struct ReportRow {
     pub cached_input_cost: f64,
     pub output_cost: f64,
     pub estimated_cost: f64,
+    pub cache_write_tokens: u64,
+    pub cache_write_cost: f64,
     #[serde(skip)]
     pub dimensions: BTreeMap<String, String>,
 }
@@ -95,6 +97,8 @@ struct TelemetryMetrics {
     cached_input_cost_usd: f64,
     output_cost_usd: f64,
     estimated_cost_usd: f64,
+    cache_write_tokens: u64,
+    cache_write_cost_usd: f64,
 }
 
 pub fn aggregate(
@@ -166,16 +170,30 @@ pub fn aggregate(
         row.cached_input_tokens += event.cached_input_tokens;
         row.output_tokens += event.output_tokens;
         row.reasoning_output_tokens += event.reasoning_output_tokens;
+        let cache_write_tokens = event.cache_write_5m_tokens + event.cache_write_1h_tokens;
+        row.cache_write_tokens += cache_write_tokens;
         if let Some(rates) = event
             .model
             .as_deref()
             .and_then(|model| pricing.rates_for(model, event.captured_at))
         {
-            let non_cached = event.input_tokens.saturating_sub(event.cached_input_tokens);
+            let rates = if event.speed.as_deref() == Some("fast") {
+                rates.scaled(2.0)
+            } else {
+                rates
+            };
+            let non_cached = event
+                .input_tokens
+                .saturating_sub(event.cached_input_tokens)
+                .saturating_sub(cache_write_tokens);
             row.input_cost += non_cached as f64 * rates.input / 1_000_000.0;
             row.cached_input_cost += event.cached_input_tokens as f64 * rates.cached / 1_000_000.0;
+            row.cache_write_cost += (event.cache_write_5m_tokens as f64 * rates.cache_write_5m
+                + event.cache_write_1h_tokens as f64 * rates.cache_write_1h)
+                / 1_000_000.0;
             row.output_cost += event.output_tokens as f64 * rates.output / 1_000_000.0;
-            row.estimated_cost = row.input_cost + row.cached_input_cost + row.output_cost;
+            row.estimated_cost =
+                row.input_cost + row.cached_input_cost + row.cache_write_cost + row.output_cost;
         }
     }
     rows.into_values().collect()
@@ -214,6 +232,8 @@ pub fn render_telemetry(
                 cached_input_cost_usd: row.cached_input_cost,
                 output_cost_usd: row.output_cost,
                 estimated_cost_usd: row.estimated_cost,
+                cache_write_tokens: row.cache_write_tokens,
+                cache_write_cost_usd: row.cache_write_cost,
             },
         })
         .collect();
@@ -258,6 +278,8 @@ fn render_csv(rows: &[ReportRow]) -> Result<String> {
         "cached_input_cost",
         "output_cost",
         "estimated_cost",
+        "cache_write_tokens",
+        "cache_write_cost",
     ])?;
     for row in rows {
         writer.serialize(row)?;
@@ -268,30 +290,26 @@ fn render_csv(rows: &[ReportRow]) -> Result<String> {
 
 fn render_table(rows: &[ReportRow], include_group: bool) -> String {
     let show_summary = rows.len() != 1 || rows[0].period != "All" || include_group;
+    let include_cache_writes = rows.iter().any(|row| row.cache_write_tokens > 0);
     let mut headers = vec!["Period".to_owned()];
     if include_group {
         headers.push("Group".to_owned());
     }
-    headers.extend(
-        [
-            "Total",
-            "Input",
-            "Cached",
-            "Output",
-            "Reasoning",
-            "Input cost",
-            "Cached cost",
-            "Output cost",
-            "Est. cost",
-        ]
-        .map(str::to_owned),
-    );
+    headers.extend(["Total", "Input", "Cached"].map(str::to_owned));
+    if include_cache_writes {
+        headers.push("Cache write".to_owned());
+    }
+    headers.extend(["Output", "Reasoning", "Input cost", "Cached cost"].map(str::to_owned));
+    if include_cache_writes {
+        headers.push("Cache write cost".to_owned());
+    }
+    headers.extend(["Output cost", "Est. cost"].map(str::to_owned));
 
     let values: Vec<Vec<String>> = rows
         .iter()
-        .map(|row| row_values(row, include_group))
+        .map(|row| row_values(row, include_group, include_cache_writes))
         .collect();
-    let total_values = row_values(&summarize(rows), include_group);
+    let total_values = row_values(&summarize(rows), include_group, include_cache_writes);
     let mut widths: Vec<usize> = headers.iter().map(String::len).collect();
     for row in values.iter().chain(std::iter::once(&total_values)) {
         for (index, value) in row.iter().enumerate() {
@@ -332,11 +350,13 @@ fn summarize(rows: &[ReportRow]) -> ReportRow {
         total.cached_input_cost += row.cached_input_cost;
         total.output_cost += row.output_cost;
         total.estimated_cost += row.estimated_cost;
+        total.cache_write_tokens += row.cache_write_tokens;
+        total.cache_write_cost += row.cache_write_cost;
     }
     total
 }
 
-fn row_values(row: &ReportRow, include_group: bool) -> Vec<String> {
+fn row_values(row: &ReportRow, include_group: bool, include_cache_writes: bool) -> Vec<String> {
     let mut values = vec![row.period.clone()];
     if include_group {
         values.push(row.group.clone());
@@ -345,10 +365,20 @@ fn row_values(row: &ReportRow, include_group: bool) -> Vec<String> {
         format_integer(row.total_tokens),
         format_integer(row.input_tokens),
         format_integer(row.cached_input_tokens),
+    ]);
+    if include_cache_writes {
+        values.push(format_integer(row.cache_write_tokens));
+    }
+    values.extend([
         format_integer(row.output_tokens),
         format_integer(row.reasoning_output_tokens),
         format!("${:.2}", row.input_cost),
         format!("${:.2}", row.cached_input_cost),
+    ]);
+    if include_cache_writes {
+        values.push(format!("${:.2}", row.cache_write_cost));
+    }
+    values.extend([
         format!("${:.2}", row.output_cost),
         format!("${:.2}", row.estimated_cost),
     ]);
@@ -486,5 +516,44 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].output_cost, 50.0);
         assert_eq!(rows[0].estimated_cost, 50.0);
+    }
+
+    #[test]
+    fn aggregate_prices_claude_cache_writes_separately() {
+        let event = UsageEvent {
+            captured_at: "2026-09-28T00:00:00Z".parse().unwrap(),
+            input_tokens: 4_000_000,
+            cached_input_tokens: 1_000_000,
+            cache_write_5m_tokens: 1_000_000,
+            cache_write_1h_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            model: Some("claude-opus-5-5".to_owned()),
+            ..UsageEvent::default()
+        };
+        let fast = UsageEvent {
+            speed: Some("fast".to_owned()),
+            ..event.clone()
+        };
+        let pricing = Pricing::default();
+        let standard = aggregate(
+            [event].into_iter(),
+            PeriodGroup::All,
+            &[],
+            chrono_tz::UTC,
+            &pricing,
+        );
+        assert_eq!(standard[0].input_cost, 4.0);
+        assert_eq!(standard[0].cached_input_cost, 0.2);
+        assert_eq!(standard[0].cache_write_cost, 13.0);
+        assert_eq!(standard[0].output_cost, 20.0);
+        assert_eq!(standard[0].estimated_cost, 37.2);
+        let fast = aggregate(
+            [fast].into_iter(),
+            PeriodGroup::All,
+            &[],
+            chrono_tz::UTC,
+            &pricing,
+        );
+        assert_eq!(fast[0].estimated_cost, 74.4);
     }
 }

@@ -2,7 +2,8 @@
 
 A fast, database-free Rust CLI for analyzing [OpenAI Codex CLI](https://github.com/openai/codex)
 usage, token consumption, estimated costs, latency, and context composition
-from local `rollout-*.jsonl` session files.
+from local `rollout-*.jsonl` session files. It can also analyze
+[Claude Code](https://claude.com/claude-code) session transcripts.
 
 Fast and lightweight: rollout files are processed in parallel, with no database
 or background service required. The optimized Linux x86-64 binary is about
@@ -17,6 +18,7 @@ or background service required. The optimized Linux x86-64 binary is about
 - Analyze context composition and identify token-heavy tools and content
 - Export reports as human-readable tables, JSON, or CSV
 - Export versioned, structured JSON for telemetry ingestion
+- Analyze Claude Code sessions, or Codex and Claude Code together, with `--source`
 - Keep session data local with no database, account, or background service
 
 Cost estimates select the price that was effective on each event's UTC date.
@@ -25,7 +27,9 @@ Historical price changes are sourced from the
 current Codex rates come from the
 [ChatGPT rate card](https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing).
 When OpenAI publishes only an effective date, the new rate is applied from
-00:00 UTC on that date.
+00:00 UTC on that date. Claude model rates, including 5-minute and 1-hour cache
+writes, come from the
+[Claude API pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
 
 ## Build
 
@@ -80,6 +84,7 @@ Supported report options include:
 - `--today`, `--last`, `--from`, and `--to`
 - `--group all|day|week|month` (default: `all`)
 - `--by model|effort|directory|session`, with comma-separated dimensions such as `--by model,effort`
+- `--source codex|claude|all`
 - `--format table|json|csv|telemetry-json`
 - `--timezone IANA_NAME`
 - `--output PATH`
@@ -135,3 +140,36 @@ uncategorized output. Sources such as `rg`, `grep`, `find`, `ls`, `sed`, and
 For patch/edit calls, the call wrapper and metadata are accounted separately
 from the actual patch or replacement-code payload; the tool's confirmation is
 reported as a third, distinct result category.
+
+## Claude Code
+
+```bash
+# Claude Code usage over seven days, broken down by model
+codex-usage-analyzer report --source claude --last 7d --by model
+
+# Codex and Claude Code combined
+codex-usage-analyzer report --source all --last 7d --by model
+
+# Claude Code agent-hours, including subagents
+codex-usage-analyzer workflow --source claude --last 7d --group day
+```
+
+`--source codex|claude|all` (or `CODEX_USAGE_SOURCE`) selects the session logs
+used by `report`, `latency`, and `workflow`; the default is `codex`. Claude Code
+transcripts are read from `$CLAUDE_CONFIG_DIR/projects`, or
+`~/.claude/projects` when that variable is unset. Override the location with
+`--claude-projects PATH` or `CODEX_USAGE_CLAUDE_PROJECTS`. Subagent transcripts
+are included.
+
+Claude Code writes one transcript line per content block, so usage is
+deduplicated by API message ID, keeping the final reported counts. Sessions
+copied between project directories are counted once. `Input` includes uncached
+input, cache reads (`Cached`), and cache writes (`Cache write`); cache writes are
+priced at their 5-minute or 1-hour rate, and fast-mode requests at twice the
+standard rates. `Reasoning` reports thinking tokens, which are part of `Output`.
+The costs are API-rate equivalents and do not reflect subscription plans.
+
+Claude Code does not record turn durations, so a turn is measured from the user
+prompt to the last assistant message before the next prompt. `latency` reports
+these durations without time-to-first-token values. `status` and `breakdown`
+support Codex rollouts only.

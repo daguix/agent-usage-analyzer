@@ -439,3 +439,96 @@ fn breakdown_table_renders_family_kind_and_source_levels() {
     );
     assert!(table.lines().any(|line| line.starts_with("    rg")));
 }
+
+#[test]
+fn claude_report_deduplicates_streamed_and_relocated_messages() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+        .args([
+            "report",
+            "--source",
+            "claude",
+            "--claude-projects",
+            "tests/fixtures/claude",
+            "--last",
+            "all",
+            "--by",
+            "model",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("binary should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 2);
+    assert_eq!(rows[0]["group"], "claude-haiku-4-5-20251001");
+    assert_eq!(rows[0]["total_tokens"], 120);
+    assert_eq!(rows[1]["group"], "claude-opus-5-5");
+    assert_eq!(rows[1]["total_tokens"], 2385);
+    assert_eq!(rows[1]["input_tokens"], 2225);
+    assert_eq!(rows[1]["cached_input_tokens"], 1000);
+    assert_eq!(rows[1]["cache_write_tokens"], 1200);
+    assert_eq!(rows[1]["output_tokens"], 160);
+    assert!((rows[1]["cache_write_cost"].as_f64().unwrap() - 0.0096).abs() < 1e-12);
+    assert!((rows[1]["estimated_cost"].as_f64().unwrap() - 0.0131).abs() < 1e-12);
+}
+
+#[test]
+fn claude_workflow_counts_subagent_turns_in_parallel() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+        .args([
+            "workflow",
+            "--source",
+            "claude",
+            "--claude-projects",
+            "tests/fixtures/claude",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("binary should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows[0]["agent_hours"], 35.0 / 3600.0);
+    assert_eq!(rows[0]["wall_clock_active_hours"], 30.0 / 3600.0);
+}
+
+#[test]
+fn all_sources_combine_codex_and_claude_usage() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+        .args([
+            "report",
+            "--source",
+            "all",
+            "--rollouts",
+            "tests/fixtures/rollouts",
+            "--claude-projects",
+            "tests/fixtures/claude",
+            "--last",
+            "all",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("binary should run");
+    assert!(output.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows[0]["total_tokens"], 465 + 2505);
+}
+
+#[test]
+fn status_rejects_claude_source() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codex-usage-analyzer"))
+        .args(["status", "--source", "claude"])
+        .output()
+        .expect("binary should run");
+    assert!(!output.status.success());
+}

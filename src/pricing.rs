@@ -7,6 +7,20 @@ pub struct Rates {
     pub input: f64,
     pub cached: f64,
     pub output: f64,
+    pub cache_write_5m: f64,
+    pub cache_write_1h: f64,
+}
+
+impl Rates {
+    pub fn scaled(self, factor: f64) -> Self {
+        Self {
+            input: self.input * factor,
+            cached: self.cached * factor,
+            output: self.output * factor,
+            cache_write_5m: self.cache_write_5m * factor,
+            cache_write_1h: self.cache_write_1h * factor,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -47,6 +61,43 @@ impl Default for Pricing {
                         input,
                         cached,
                         output,
+                        cache_write_5m: input,
+                        cache_write_1h: input,
+                    },
+                }],
+            );
+        }
+        for (name, input, cache_write_5m, cache_write_1h, cached, output) in [
+            ("claude-fable-5-1", 10.0, 12.5, 20.0, 0.25, 50.0),
+            ("claude-mythos-5-1", 10.0, 12.5, 20.0, 0.25, 50.0),
+            ("claude-fable-5", 10.0, 12.5, 20.0, 1.0, 50.0),
+            ("claude-mythos-5", 10.0, 12.5, 20.0, 1.0, 50.0),
+            ("claude-opus-5-5", 4.0, 5.0, 8.0, 0.2, 20.0),
+            ("claude-opus-5", 5.0, 6.25, 10.0, 0.5, 25.0),
+            ("claude-opus-4-8", 5.0, 6.25, 10.0, 0.5, 25.0),
+            ("claude-opus-4-7", 5.0, 6.25, 10.0, 0.5, 25.0),
+            ("claude-opus-4-6", 5.0, 6.25, 10.0, 0.5, 25.0),
+            ("claude-opus-4-5", 5.0, 6.25, 10.0, 0.5, 25.0),
+            ("claude-opus-4-1", 15.0, 18.75, 30.0, 1.5, 75.0),
+            ("claude-opus-4", 15.0, 18.75, 30.0, 1.5, 75.0),
+            ("claude-sonnet-5-5", 2.0, 2.5, 4.0, 0.2, 10.0),
+            ("claude-sonnet-5", 2.0, 2.5, 4.0, 0.2, 10.0),
+            ("claude-sonnet-4-6", 3.0, 3.75, 6.0, 0.3, 15.0),
+            ("claude-sonnet-4-5", 3.0, 3.75, 6.0, 0.3, 15.0),
+            ("claude-sonnet-4", 3.0, 3.75, 6.0, 0.3, 15.0),
+            ("claude-haiku-4-5", 1.0, 1.25, 2.0, 0.1, 5.0),
+            ("claude-3-5-haiku", 0.8, 1.0, 1.6, 0.08, 4.0),
+        ] {
+            rates.insert(
+                name,
+                vec![PricePeriod {
+                    effective_from: NaiveDate::MIN,
+                    rates: Rates {
+                        input,
+                        cached,
+                        output,
+                        cache_write_5m,
+                        cache_write_1h,
                     },
                 }],
             );
@@ -120,11 +171,20 @@ fn period(year: i32, month: u32, day: u32, input: f64, cached: f64, output: f64)
             input,
             cached,
             output,
+            cache_write_5m: input,
+            cache_write_1h: input,
         },
     }
 }
 
 fn strip_dated_suffix(value: &str) -> &str {
+    if value.len() > 9 {
+        let split = value.len() - 9;
+        let bytes = &value.as_bytes()[split..];
+        if bytes[0] == b'-' && bytes[1..].iter().all(u8::is_ascii_digit) {
+            return &value[..split];
+        }
+    }
     if value.len() < 11 {
         return value;
     }
@@ -242,5 +302,32 @@ mod tests {
             .unwrap();
         assert_eq!((sol.input, sol.cached, sol.output), (2.0, 0.2, 10.0));
         assert_eq!((luna.input, luna.cached, luna.output), (0.1, 0.01, 0.5));
+    }
+
+    #[test]
+    fn prices_claude_models_including_cache_writes_and_dated_ids() {
+        let pricing = Pricing::default();
+        let opus = pricing
+            .rates_for("claude-opus-5-5", at("2026-09-28T00:00:00Z"))
+            .unwrap();
+        let haiku = pricing
+            .rates_for("claude-haiku-4-5-20251001", at("2026-09-28T00:00:00Z"))
+            .unwrap();
+        assert_eq!(
+            (
+                opus.input,
+                opus.cache_write_5m,
+                opus.cache_write_1h,
+                opus.cached,
+                opus.output
+            ),
+            (4.0, 5.0, 8.0, 0.2, 20.0)
+        );
+        assert_eq!((haiku.input, haiku.output), (1.0, 5.0));
+        assert!(
+            pricing
+                .rates_for("<synthetic>", at("2026-09-28T00:00:00Z"))
+                .is_none()
+        );
     }
 }

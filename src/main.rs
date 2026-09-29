@@ -1,4 +1,5 @@
 mod breakdown;
+mod claude;
 mod cli;
 mod ingest;
 mod latency;

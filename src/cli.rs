@@ -6,6 +6,7 @@ use chrono_tz::Tz;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::breakdown;
+use crate::claude;
 use crate::ingest::{ScanResult, scan_rollouts};
 use crate::latency;
 use crate::pricing::Pricing;
@@ -19,7 +20,7 @@ type DateRange = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 #[command(
     name = "codex-usage-analyzer",
     version,
-    about = "Analyze Codex rollout token usage without a database",
+    about = "Analyze Codex and Claude Code token usage without a database",
     args_conflicts_with_subcommands = true
 )]
 pub struct Cli {
@@ -47,10 +48,24 @@ enum Command {
 struct SourceArgs {
     #[arg(
         long,
+        value_enum,
+        env = "CODEX_USAGE_SOURCE",
+        default_value_t = SourceArg::Codex,
+        help = "Session logs to analyze"
+    )]
+    source: SourceArg,
+    #[arg(
+        long,
         env = "CODEX_USAGE_ROLLOUTS",
         help = "Directory containing rollout-*.jsonl files"
     )]
     rollouts: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "CODEX_USAGE_CLAUDE_PROJECTS",
+        help = "Directory containing Claude Code project session files"
+    )]
+    claude_projects: Option<PathBuf>,
     #[arg(
         long,
         default_value = DEFAULT_TIMEZONE,
@@ -188,6 +203,13 @@ struct BreakdownArgs {
     format: FormatArg,
     #[arg(long, short = 'o', help = "Write output to a file instead of stdout")]
     output: Option<PathBuf>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum SourceArg {
+    Codex,
+    Claude,
+    All,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -346,6 +368,7 @@ fn run_latency(args: LatencyArgs) -> Result<()> {
 }
 
 fn run_breakdown(args: BreakdownArgs) -> Result<()> {
+    require_codex_source(&args.source, "breakdown")?;
     let timezone = parse_timezone(&args.source.timezone)?;
     let (start, end) = resolve_range(&args.range, timezone)?;
     let root = args
@@ -677,6 +700,7 @@ fn run_report(args: ReportArgs) -> Result<()> {
 }
 
 fn run_status(args: StatusArgs) -> Result<()> {
+    require_codex_source(&args.source, "status")?;
     let timezone = parse_timezone(&args.source.timezone)?;
     let scan = scan(&args.source)?;
     emit_scan_warnings(&scan);
@@ -688,18 +712,58 @@ fn run_status(args: StatusArgs) -> Result<()> {
     Ok(())
 }
 
+fn require_codex_source(args: &SourceArgs, command: &str) -> Result<()> {
+    if args.source != SourceArg::Codex {
+        bail!("{command} is only available for Codex rollouts; use --source codex");
+    }
+    Ok(())
+}
+
 fn scan(args: &SourceArgs) -> Result<ScanResult> {
-    let root = args.rollouts.clone().unwrap_or_else(default_rollouts_dir);
-    scan_rollouts(&root).with_context(|| format!("failed to scan {}", root.display()))
+    let mut result = ScanResult::default();
+    if matches!(args.source, SourceArg::Codex | SourceArg::All) {
+        let root = args.rollouts.clone().unwrap_or_else(default_rollouts_dir);
+        merge_scan(
+            &mut result,
+            scan_rollouts(&root).with_context(|| format!("failed to scan {}", root.display()))?,
+        );
+    }
+    if matches!(args.source, SourceArg::Claude | SourceArg::All) {
+        let root = args
+            .claude_projects
+            .clone()
+            .unwrap_or_else(default_claude_projects_dir);
+        merge_scan(
+            &mut result,
+            claude::scan_projects(&root)
+                .with_context(|| format!("failed to scan {}", root.display()))?,
+        );
+    }
+    Ok(result)
+}
+
+fn merge_scan(target: &mut ScanResult, source: ScanResult) {
+    target.events.extend(source.events);
+    target.latencies.extend(source.latencies);
+    target.files += source.files;
+    target.invalid_lines += source.invalid_lines;
 }
 
 fn emit_scan_warnings(scan: &ScanResult) {
     if scan.invalid_lines > 0 {
         eprintln!(
-            "warning: ignored {} malformed JSONL line(s) across {} rollout file(s)",
+            "warning: ignored {} malformed JSONL line(s) across {} session file(s)",
             scan.invalid_lines, scan.files
         );
     }
+}
+
+fn default_claude_projects_dir() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
+        .unwrap_or_else(|| PathBuf::from(".claude"))
+        .join("projects")
 }
 
 fn default_rollouts_dir() -> PathBuf {
