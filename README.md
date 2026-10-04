@@ -31,6 +31,10 @@ When OpenAI publishes only an effective date, the new rate is applied from
 00:00 UTC on that date. Claude model rates, including 5-minute and 1-hour cache
 writes, come from the
 [Claude API pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
+Rates were last checked on October 4, 2026. GPT-6.1 Sol is priced from
+September 29, 2026 at $2 input, $0.10 cached input, $2.50 cache writes, and
+$10 output per million tokens, as published in the
+[OpenAI API pricing](https://developers.openai.com/api/docs/pricing).
 
 ## Build
 

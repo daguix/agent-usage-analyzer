@@ -102,9 +102,19 @@ impl Default for Pricing {
                 }],
             );
         }
-        rates.insert("gpt-6-astra", vec![period(2026, 9, 3, 10.0, 1.0, 50.0)]);
-        rates.insert("gpt-6-sol", vec![period(2026, 9, 22, 2.0, 0.2, 10.0)]);
-        rates.insert("gpt-6-luna", vec![period(2026, 9, 22, 0.1, 0.01, 0.5)]);
+        rates.insert(
+            "gpt-6-astra",
+            vec![gpt_6_period(2026, 9, 3, 10.0, 1.0, 50.0)],
+        );
+        rates.insert("gpt-6-sol", vec![gpt_6_period(2026, 9, 22, 2.0, 0.2, 10.0)]);
+        rates.insert(
+            "gpt-6.1-sol",
+            vec![gpt_6_period(2026, 9, 29, 2.0, 0.1, 10.0)],
+        );
+        rates.insert(
+            "gpt-6-luna",
+            vec![gpt_6_period(2026, 9, 22, 0.1, 0.01, 0.5)],
+        );
         rates.insert(
             "gpt-5.6-sol",
             vec![
@@ -175,6 +185,20 @@ fn period(year: i32, month: u32, day: u32, input: f64, cached: f64, output: f64)
             cache_write_1h: input,
         },
     }
+}
+
+fn gpt_6_period(
+    year: i32,
+    month: u32,
+    day: u32,
+    input: f64,
+    cached: f64,
+    output: f64,
+) -> PricePeriod {
+    let mut price = period(year, month, day, input, cached, output);
+    price.rates.cache_write_5m = input * 1.25;
+    price.rates.cache_write_1h = input * 1.25;
+    price
 }
 
 fn strip_dated_suffix(value: &str) -> &str {
@@ -302,6 +326,45 @@ mod tests {
             .unwrap();
         assert_eq!((sol.input, sol.cached, sol.output), (2.0, 0.2, 10.0));
         assert_eq!((luna.input, luna.cached, luna.output), (0.1, 0.01, 0.5));
+    }
+
+    #[test]
+    fn prices_gpt_6_1_sol_from_its_release_without_changing_gpt_6_sol() {
+        let pricing = Pricing::default();
+        assert!(
+            pricing
+                .rates_for("gpt-6.1-sol", at("2026-09-28T23:59:59Z"))
+                .is_none()
+        );
+        for model in ["gpt-6.1-sol", "gpt-6.1-sol-2026-09-29"] {
+            let rates = pricing
+                .rates_for(model, at("2026-09-29T00:00:00Z"))
+                .unwrap();
+            assert_eq!((rates.input, rates.cached, rates.output), (2.0, 0.1, 10.0));
+            assert_eq!((rates.cache_write_5m, rates.cache_write_1h), (2.5, 2.5));
+        }
+        let previous = pricing
+            .rates_for("gpt-6-sol", at("2026-10-04T00:00:00Z"))
+            .unwrap();
+        assert_eq!(previous.cached, 0.2);
+    }
+
+    #[test]
+    fn prices_gpt_6_cache_writes() {
+        let pricing = Pricing::default();
+        for (model, expected) in [
+            ("gpt-6-astra", 12.5),
+            ("gpt-6-sol", 2.5),
+            ("gpt-6-luna", 0.125),
+        ] {
+            let rates = pricing
+                .rates_for(model, at("2026-10-04T00:00:00Z"))
+                .unwrap();
+            assert_eq!(
+                (rates.cache_write_5m, rates.cache_write_1h),
+                (expected, expected)
+            );
+        }
     }
 
     #[test]
