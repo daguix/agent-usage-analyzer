@@ -112,7 +112,7 @@ pub fn aggregate(
     pricing: &Pricing,
 ) -> Vec<ReportRow> {
     let mut rows: BTreeMap<(String, String), ReportRow> = BTreeMap::new();
-    for event in events {
+    for event in events.filter(|event| event.input_tokens > 0 || event.output_tokens > 0) {
         let local = event.captured_at.with_timezone(&timezone);
         let period_key = match period {
             PeriodGroup::All => "All".to_owned(),
@@ -524,6 +524,35 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].output_cost, 50.0);
         assert_eq!(rows[0].estimated_cost, 50.0);
+    }
+
+    #[test]
+    fn aggregate_skips_context_snapshots_without_usage() {
+        let events = [
+            UsageEvent {
+                captured_at: "2026-09-22T10:24:51Z".parse().unwrap(),
+                total_tokens: 81_170,
+                ..UsageEvent::default()
+            },
+            UsageEvent {
+                captured_at: "2026-09-22T10:24:52Z".parse().unwrap(),
+                total_tokens: 88_698,
+                input_tokens: 88_619,
+                output_tokens: 79,
+                model: Some("codex-auto-review".to_owned()),
+                ..UsageEvent::default()
+            },
+        ];
+        let rows = aggregate(
+            events.into_iter(),
+            PeriodGroup::All,
+            &[GroupBy::Model],
+            chrono_tz::UTC,
+            &Pricing::default(),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].group, "codex-auto-review");
+        assert_eq!(rows[0].total_tokens, 88_698);
     }
 
     #[test]
