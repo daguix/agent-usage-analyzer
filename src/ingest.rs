@@ -10,6 +10,9 @@ use serde::Serialize;
 use serde_json::Value;
 use walkdir::WalkDir;
 
+use crate::activity::BlockKind;
+use crate::tools::ToolKind;
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct UsageEvent {
     pub captured_at: DateTime<Utc>,
@@ -46,6 +49,24 @@ pub struct LatencyEvent {
     pub session_id: Option<String>,
     pub turn_id: Option<String>,
     pub tool_intervals: Option<Vec<(DateTime<Utc>, DateTime<Utc>)>>,
+    pub tool_calls: Vec<ToolCall>,
+    pub model_blocks: Vec<ModelBlock>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ModelBlock {
+    pub kind: BlockKind,
+    pub tool: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolCall {
+    pub kind: ToolKind,
+    pub command: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -268,6 +289,8 @@ fn parse_value(
                     .and_then(Value::as_str)
                     .map(str::to_owned),
                 tool_intervals: None,
+                tool_calls: Vec::new(),
+                model_blocks: Vec::new(),
             });
         }
         _ => {}

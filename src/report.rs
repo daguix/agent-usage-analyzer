@@ -11,6 +11,7 @@ use crate::pricing::Pricing;
 #[derive(Clone, Copy, Debug)]
 pub enum PeriodGroup {
     All,
+    Hour,
     Day,
     Week,
     Month,
@@ -115,6 +116,7 @@ pub fn aggregate(
         let local = event.captured_at.with_timezone(&timezone);
         let period_key = match period {
             PeriodGroup::All => "All".to_owned(),
+            PeriodGroup::Hour => local.format("%Y-%m-%d %H:00").to_string(),
             PeriodGroup::Day => local.format("%Y-%m-%d").to_string(),
             PeriodGroup::Week => {
                 let offset = match local.weekday() {
@@ -522,6 +524,38 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].output_cost, 50.0);
         assert_eq!(rows[0].estimated_cost, 50.0);
+    }
+
+    #[test]
+    fn aggregate_preserves_claude_prices_across_generations() {
+        let events = [
+            ("claude-opus-4-1-20250805", "2025-08-05T00:00:00Z"),
+            ("claude-opus-4-5", "2025-11-24T00:00:00Z"),
+            ("claude-opus-5-5", "2026-09-22T00:00:00Z"),
+        ]
+        .map(|(model, captured_at)| UsageEvent {
+            captured_at: captured_at.parse().unwrap(),
+            input_tokens: 4_000_000,
+            cached_input_tokens: 1_000_000,
+            cache_write_5m_tokens: 1_000_000,
+            cache_write_1h_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            model: Some(model.to_owned()),
+            ..UsageEvent::default()
+        });
+        let rows = aggregate(
+            events.into_iter(),
+            PeriodGroup::All,
+            &[],
+            chrono_tz::UTC,
+            &Pricing::default(),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].input_cost, 24.0);
+        assert_eq!(rows[0].output_cost, 120.0);
+        assert_eq!(rows[0].cache_write_cost, 78.0);
+        assert_eq!(rows[0].cached_input_cost, 2.2);
+        assert_eq!(rows[0].estimated_cost, 224.2);
     }
 
     #[test]

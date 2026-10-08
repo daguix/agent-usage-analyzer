@@ -5,12 +5,14 @@ use chrono::{DateTime, Datelike, LocalResult, NaiveDate, NaiveDateTime, TimeZone
 use chrono_tz::Tz;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::activity;
 use crate::breakdown;
 use crate::claude;
 use crate::ingest::{ScanResult, scan_rollouts};
 use crate::latency;
 use crate::pricing::Pricing;
 use crate::report::{self, GroupBy, PeriodGroup, ReportFormat};
+use crate::tools;
 use crate::workflow;
 
 const DEFAULT_TIMEZONE: &str = "Europe/Stockholm";
@@ -40,6 +42,12 @@ enum Command {
     Latency(LatencyArgs),
     #[command(about = "Show daily agent-hours and effective parallelism")]
     Workflow(WorkflowArgs),
+    #[command(
+        about = "Show time spent in tool calls by kind and command, such as builds and tests"
+    )]
+    Tools(WorkflowArgs),
+    #[command(about = "Split agent time into model response, tool execution, and other time")]
+    Time(WorkflowArgs),
     #[command(about = "Estimate which kinds of content make up model input and cached input")]
     Breakdown(BreakdownArgs),
 }
@@ -50,7 +58,7 @@ struct SourceArgs {
         long,
         value_enum,
         env = "AGENT_USAGE_SOURCE",
-        default_value_t = SourceArg::Codex,
+        default_value_t = SourceArg::All,
         help = "Session logs to analyze"
     )]
     source: SourceArg,
@@ -126,6 +134,7 @@ struct ReportArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+#[command(mut_arg("source", |arg| arg.default_value("codex")))]
 struct StatusArgs {
     #[command(flatten)]
     source: SourceArgs,
@@ -189,6 +198,7 @@ struct WorkflowArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+#[command(mut_arg("source", |arg| arg.default_value("codex")))]
 struct BreakdownArgs {
     #[command(flatten)]
     source: SourceArgs,
@@ -215,6 +225,7 @@ enum SourceArg {
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum PeriodArg {
     All,
+    Hour,
     Day,
     Week,
     Month,
@@ -234,9 +245,20 @@ impl PeriodArg {
     fn name(self) -> &'static str {
         match self {
             Self::All => "all",
+            Self::Hour => "hour",
             Self::Day => "day",
             Self::Week => "week",
             Self::Month => "month",
+        }
+    }
+
+    fn period(self) -> PeriodGroup {
+        match self {
+            Self::All => PeriodGroup::All,
+            Self::Hour => PeriodGroup::Hour,
+            Self::Day => PeriodGroup::Day,
+            Self::Week => PeriodGroup::Week,
+            Self::Month => PeriodGroup::Month,
         }
     }
 }
@@ -290,6 +312,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Some(Command::Status(args)) => run_status(args),
         Some(Command::Latency(args)) => run_latency(args),
         Some(Command::Workflow(args)) => run_workflow(args),
+        Some(Command::Tools(args)) => run_tools(args),
+        Some(Command::Time(args)) => run_time(args),
         Some(Command::Breakdown(args)) => run_breakdown(args),
         None => run_report(cli.report),
     }
@@ -305,15 +329,70 @@ fn run_workflow(args: WorkflowArgs) -> Result<()> {
         start,
         end,
         timezone,
-        match args.group {
-            PeriodArg::All => PeriodGroup::All,
-            PeriodArg::Day => PeriodGroup::Day,
-            PeriodArg::Week => PeriodGroup::Week,
-            PeriodArg::Month => PeriodGroup::Month,
-        },
+        args.group.period(),
         &group_by(&args.by),
     );
     let output = workflow::render(
+        &rows,
+        match args.format {
+            FormatArg::Table => ReportFormat::Table,
+            FormatArg::Json => ReportFormat::Json,
+            FormatArg::Csv => ReportFormat::Csv,
+        },
+    )?;
+    if let Some(path) = args.output {
+        std::fs::write(&path, format!("{output}\n"))
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    } else {
+        println!("{output}");
+    }
+    Ok(())
+}
+
+fn run_tools(args: WorkflowArgs) -> Result<()> {
+    let timezone = parse_timezone(&args.source.timezone)?;
+    let (start, end) = resolve_range(&args.range, timezone)?;
+    let scan = scan(&args.source)?;
+    emit_scan_warnings(&scan);
+    let rows = tools::aggregate(
+        scan.latencies,
+        start,
+        end,
+        timezone,
+        args.group.period(),
+        &group_by(&args.by),
+    );
+    let output = tools::render(
+        &rows,
+        match args.format {
+            FormatArg::Table => ReportFormat::Table,
+            FormatArg::Json => ReportFormat::Json,
+            FormatArg::Csv => ReportFormat::Csv,
+        },
+    )?;
+    if let Some(path) = args.output {
+        std::fs::write(&path, format!("{output}\n"))
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    } else {
+        println!("{output}");
+    }
+    Ok(())
+}
+
+fn run_time(args: WorkflowArgs) -> Result<()> {
+    let timezone = parse_timezone(&args.source.timezone)?;
+    let (start, end) = resolve_range(&args.range, timezone)?;
+    let scan = scan(&args.source)?;
+    emit_scan_warnings(&scan);
+    let rows = activity::aggregate(
+        scan.latencies,
+        start,
+        end,
+        timezone,
+        args.group.period(),
+        &group_by(&args.by),
+    );
+    let output = activity::render(
         &rows,
         match args.format {
             FormatArg::Table => ReportFormat::Table,
@@ -339,17 +418,7 @@ fn run_latency(args: LatencyArgs) -> Result<()> {
         start.is_none_or(|start| event.captured_at >= start)
             && end.is_none_or(|end| event.captured_at <= end)
     });
-    let rows = latency::aggregate(
-        events,
-        match args.group {
-            PeriodArg::All => PeriodGroup::All,
-            PeriodArg::Day => PeriodGroup::Day,
-            PeriodArg::Week => PeriodGroup::Week,
-            PeriodArg::Month => PeriodGroup::Month,
-        },
-        &group_by(&args.by),
-        timezone,
-    );
+    let rows = latency::aggregate(events, args.group.period(), &group_by(&args.by), timezone);
     let output = latency::render(
         &rows,
         !args.by.is_empty(),
@@ -650,12 +719,7 @@ fn run_report(args: ReportArgs) -> Result<()> {
     let window_end = end.or_else(|| events.iter().map(|event| event.captured_at).max());
     let rows = report::aggregate(
         events.into_iter(),
-        match args.group {
-            PeriodArg::All => PeriodGroup::All,
-            PeriodArg::Day => PeriodGroup::Day,
-            PeriodArg::Week => PeriodGroup::Week,
-            PeriodArg::Month => PeriodGroup::Month,
-        },
+        args.group.period(),
         &group_by(&args.by),
         timezone,
         &Pricing::default(),

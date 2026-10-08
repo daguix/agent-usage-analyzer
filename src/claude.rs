@@ -10,9 +10,12 @@ use rayon::prelude::*;
 use serde_json::Value;
 use walkdir::WalkDir;
 
+use crate::activity::BlockKind;
 use crate::ingest::{
-    LatencyEvent, ScanResult, UsageEvent, number, optional_number, parse_timestamp,
+    LatencyEvent, ModelBlock, ScanResult, ToolCall, UsageEvent, number, optional_number,
+    parse_timestamp,
 };
+use crate::tools::{self, ToolKind};
 
 #[derive(Debug, Default)]
 struct FileResult {
@@ -32,15 +35,37 @@ struct Turn {
     branch: Option<String>,
     origin: Option<String>,
     session_id: Option<String>,
-    tool_starts: HashMap<String, DateTime<Utc>>,
-    tool_intervals: Vec<(DateTime<Utc>, DateTime<Utc>)>,
+    tool_starts: HashMap<String, (DateTime<Utc>, ToolKind, String)>,
+    tool_calls: Vec<ToolCall>,
+    model_blocks: Vec<ModelBlock>,
+    last_event: DateTime<Utc>,
 }
 
 impl Turn {
     fn finish(self) -> Option<LatencyEvent> {
         let ended_at = self.ended_at?;
         let duration_ms = u64::try_from((ended_at - self.started_at).num_milliseconds()).ok()?;
-        let tool_intervals = merge_intervals(self.tool_intervals, self.started_at, ended_at);
+        let tool_calls: Vec<ToolCall> = self
+            .tool_calls
+            .into_iter()
+            .filter_map(|call| {
+                let started_at = call.started_at.max(self.started_at);
+                let call_ended_at = call.ended_at.min(ended_at);
+                (call_ended_at > started_at).then_some(ToolCall {
+                    started_at,
+                    ended_at: call_ended_at,
+                    ..call
+                })
+            })
+            .collect();
+        let tool_intervals = tools::merge_intervals(
+            tool_calls
+                .iter()
+                .map(|call| (call.started_at, call.ended_at))
+                .collect(),
+            self.started_at,
+            ended_at,
+        );
         Some(LatencyEvent {
             captured_at: ended_at,
             duration_ms: Some(duration_ms),
@@ -53,29 +78,10 @@ impl Turn {
             session_id: self.session_id,
             turn_id: self.id,
             tool_intervals: Some(tool_intervals),
+            tool_calls,
+            model_blocks: self.model_blocks,
         })
     }
-}
-
-fn merge_intervals(
-    mut intervals: Vec<(DateTime<Utc>, DateTime<Utc>)>,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
-    intervals.sort_unstable();
-    let mut merged = Vec::<(DateTime<Utc>, DateTime<Utc>)>::new();
-    for (interval_start, interval_end) in intervals {
-        let interval_start = interval_start.max(start);
-        let interval_end = interval_end.min(end);
-        if interval_end <= interval_start {
-            continue;
-        }
-        match merged.last_mut() {
-            Some(last) if interval_start <= last.1 => last.1 = last.1.max(interval_end),
-            _ => merged.push((interval_start, interval_end)),
-        }
-    }
-    merged
 }
 
 pub fn scan_projects(root: &Path) -> Result<ScanResult> {
@@ -183,14 +189,25 @@ fn parse_value(
                 origin: sidechain_origin(value).or_else(|| string(value, "turnOrigin")),
                 session_id: string(value, "sessionId"),
                 tool_starts: HashMap::new(),
-                tool_intervals: Vec::new(),
+                tool_calls: Vec::new(),
+                model_blocks: Vec::new(),
+                last_event: timestamp,
             });
         }
         Some("user") => {
             if let Some(turn) = turn.as_mut() {
-                for id in content_blocks(value, "tool_result", "tool_use_id") {
-                    if let Some(start) = turn.tool_starts.remove(id) {
-                        turn.tool_intervals.push((start, timestamp));
+                for block in content_blocks(value, "tool_result") {
+                    let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    turn.last_event = turn.last_event.max(timestamp);
+                    if let Some((started_at, kind, command)) = turn.tool_starts.remove(id) {
+                        turn.tool_calls.push(ToolCall {
+                            kind,
+                            command,
+                            started_at,
+                            ended_at: timestamp,
+                        });
                     }
                 }
             }
@@ -203,8 +220,21 @@ fn parse_value(
                 .or_else(|| turn.as_ref().and_then(|turn| turn.origin.clone()));
             if let Some(turn) = turn.as_mut() {
                 turn.ended_at = Some(timestamp);
-                for id in content_blocks(value, "tool_use", "id") {
-                    turn.tool_starts.entry(id.to_owned()).or_insert(timestamp);
+                record_model_block(turn, message, timestamp);
+                for block in content_blocks(value, "tool_use") {
+                    let Some(id) = block.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    turn.tool_starts.entry(id.to_owned()).or_insert_with(|| {
+                        let (kind, command) = tools::classify(
+                            block
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                            block.get("input").unwrap_or(&Value::Null),
+                        );
+                        (timestamp, kind, command)
+                    });
                 }
                 if model.is_some() {
                     turn.model.clone_from(&model);
@@ -271,6 +301,56 @@ fn usage_event(
     }
 }
 
+fn record_model_block(turn: &mut Turn, message: &Value, timestamp: DateTime<Utc>) {
+    let Some((kind, block)) = message
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find_map(|block| {
+            let kind = match block.get("type").and_then(Value::as_str)? {
+                "thinking" | "redacted_thinking" => BlockKind::Thinking,
+                "text" => BlockKind::Text,
+                "tool_use" => BlockKind::ToolCall,
+                _ => return None,
+            };
+            Some((kind, block))
+        })
+    else {
+        return;
+    };
+    let repeated = kind == BlockKind::ToolCall
+        && block
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| turn.tool_starts.contains_key(id));
+    match turn.model_blocks.last_mut() {
+        Some(last) if repeated => last.ended_at = last.ended_at.max(timestamp),
+        _ => turn.model_blocks.push(ModelBlock {
+            kind,
+            tool: (kind == BlockKind::ToolCall).then(|| {
+                tool_label(
+                    block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+            }),
+            started_at: turn.last_event.min(timestamp),
+            ended_at: timestamp,
+        }),
+    }
+    turn.last_event = turn.last_event.max(timestamp);
+}
+
+fn tool_label(name: &str) -> String {
+    match name.strip_prefix("mcp__") {
+        Some(rest) => format!("MCP {}", rest.split("__").next().unwrap_or(rest)),
+        None if name.is_empty() => "<unknown>".to_owned(),
+        None => name.to_owned(),
+    }
+}
+
 fn is_prompt(value: &Value) -> bool {
     if value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
         || value.get("toolUseResult").is_some()
@@ -295,11 +375,7 @@ fn sidechain_origin(value: &Value) -> Option<String> {
     (value.get("isSidechain").and_then(Value::as_bool) == Some(true)).then(|| "subagent".to_owned())
 }
 
-fn content_blocks<'a>(
-    value: &'a Value,
-    kind: &'a str,
-    key: &'a str,
-) -> impl Iterator<Item = &'a str> + 'a {
+fn content_blocks<'a>(value: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> + 'a {
     value
         .get("message")
         .and_then(|message| message.get("content"))
@@ -307,7 +383,6 @@ fn content_blocks<'a>(
         .into_iter()
         .flatten()
         .filter(move |block| block.get("type").and_then(Value::as_str) == Some(kind))
-        .filter_map(move |block| block.get(key).and_then(Value::as_str))
 }
 
 fn string(value: &Value, key: &str) -> Option<String> {

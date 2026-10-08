@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use serde::Serialize;
 
@@ -47,42 +47,11 @@ pub fn aggregate(
         else {
             continue;
         };
-        let mut cursor = range_start.map_or(start, |limit| start.max(limit));
+        let start = range_start.map_or(start, |limit| start.max(limit));
         let end = range_end.map_or(event.captured_at, |limit| event.captured_at.min(limit));
-        let group = if by.is_empty() {
-            "all".to_owned()
-        } else {
-            by.iter()
-                .map(|dimension| {
-                    match dimension {
-                        GroupBy::Model => event.model.as_deref(),
-                        GroupBy::Effort => event.effort.as_deref(),
-                        GroupBy::Directory => event.directory.as_deref(),
-                        GroupBy::Branch => event.branch.as_deref(),
-                        GroupBy::Origin => event.origin.as_deref(),
-                        GroupBy::Session => event.session_id.as_deref(),
-                    }
-                    .unwrap_or("<unknown>")
-                })
-                .collect::<Vec<_>>()
-                .join(" / ")
-        };
-        while cursor < end {
-            let local_day = cursor.with_timezone(&timezone).date_naive();
-            let boundary = next_day_start(local_day, timezone).unwrap_or(end);
-            let segment_end = end.min(boundary);
-            if segment_end <= cursor {
-                break;
-            }
-            let period_key = match period {
-                PeriodGroup::All => "All".to_owned(),
-                PeriodGroup::Day => local_day.to_string(),
-                PeriodGroup::Week => (local_day
-                    - Duration::days(i64::from(local_day.weekday().num_days_from_monday())))
-                .to_string(),
-                PeriodGroup::Month => local_day.format("%Y-%m").to_string(),
-            };
-            let entry = groups.entry((period_key, group.clone())).or_default();
+        let group = group_label(&event, by);
+        for (key, cursor, segment_end) in period_segments(start, end, timezone, period) {
+            let entry = groups.entry((key, group.clone())).or_default();
             entry.intervals.push((cursor, segment_end));
             if let Some(tools) = &event.tool_intervals {
                 let overlap: i64 = tools
@@ -95,7 +64,6 @@ pub fn aggregate(
                     .sum();
                 *entry.tool_ms.get_or_insert(0) += overlap;
             }
-            cursor = segment_end;
         }
     }
     groups
@@ -134,6 +102,77 @@ pub fn aggregate(
             },
         )
         .collect()
+}
+
+pub(crate) fn group_label(event: &LatencyEvent, by: &[GroupBy]) -> String {
+    if by.is_empty() {
+        return "all".to_owned();
+    }
+    by.iter()
+        .map(|dimension| {
+            match dimension {
+                GroupBy::Model => event.model.as_deref(),
+                GroupBy::Effort => event.effort.as_deref(),
+                GroupBy::Directory => event.directory.as_deref(),
+                GroupBy::Branch => event.branch.as_deref(),
+                GroupBy::Origin => event.origin.as_deref(),
+                GroupBy::Session => event.session_id.as_deref(),
+            }
+            .unwrap_or("<unknown>")
+        })
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+pub(crate) fn period_key(at: DateTime<Utc>, timezone: Tz, period: PeriodGroup) -> String {
+    let local = at.with_timezone(&timezone);
+    let day = local.date_naive();
+    match period {
+        PeriodGroup::All => "All".to_owned(),
+        PeriodGroup::Hour => local.format("%Y-%m-%d %H:00").to_string(),
+        PeriodGroup::Day => day.to_string(),
+        PeriodGroup::Week => {
+            (day - Duration::days(i64::from(day.weekday().num_days_from_monday()))).to_string()
+        }
+        PeriodGroup::Month => day.format("%Y-%m").to_string(),
+    }
+}
+
+pub(crate) fn period_segments(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    timezone: Tz,
+    period: PeriodGroup,
+) -> Vec<(String, DateTime<Utc>, DateTime<Utc>)> {
+    let mut segments = Vec::new();
+    let mut cursor = start;
+    while cursor < end {
+        let local = cursor.with_timezone(&timezone).naive_local();
+        let boundary = match period {
+            PeriodGroup::Hour => next_hour_start(local, timezone),
+            PeriodGroup::All | PeriodGroup::Day | PeriodGroup::Week | PeriodGroup::Month => {
+                next_day_start(local.date(), timezone)
+            }
+        }
+        .unwrap_or(end);
+        let segment_end = end.min(boundary);
+        if segment_end <= cursor {
+            break;
+        }
+        segments.push((period_key(cursor, timezone, period), cursor, segment_end));
+        cursor = segment_end;
+    }
+    segments
+}
+
+fn next_hour_start(local: NaiveDateTime, timezone: Tz) -> Option<DateTime<Utc>> {
+    let mut hour = local.date().and_hms_opt(local.hour(), 0, 0)?;
+    loop {
+        hour = hour.checked_add_signed(Duration::hours(1))?;
+        if let Some(value) = timezone.from_local_datetime(&hour).earliest() {
+            return Some(value.to_utc());
+        }
+    }
 }
 
 fn next_day_start(day: NaiveDate, timezone: Tz) -> Option<DateTime<Utc>> {
@@ -283,6 +322,42 @@ mod tests {
         assert_eq!(rows[0].period, "2026-09-22");
         assert_eq!(rows[0].agent_hours, 0.5);
         assert_eq!(rows[1].period, "2026-09-23");
+        assert_eq!(rows[1].agent_hours, 0.5);
+    }
+
+    #[test]
+    fn splits_at_local_hour_boundaries() {
+        let rows = aggregate(
+            [event("2026-09-22T10:15:00Z", 7_200_000)],
+            None,
+            None,
+            chrono_tz::Asia::Kolkata,
+            PeriodGroup::Hour,
+            &[],
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].period, "2026-09-22 13:00");
+        assert_eq!(rows[0].agent_hours, 0.25);
+        assert_eq!(rows[1].period, "2026-09-22 14:00");
+        assert_eq!(rows[1].agent_hours, 1.0);
+        assert_eq!(rows[2].period, "2026-09-22 15:00");
+        assert_eq!(rows[2].agent_hours, 0.75);
+    }
+
+    #[test]
+    fn hour_grouping_skips_daylight_saving_gap() {
+        let rows = aggregate(
+            [event("2026-03-29T01:30:00Z", 3_600_000)],
+            None,
+            None,
+            chrono_tz::Europe::Paris,
+            PeriodGroup::Hour,
+            &[],
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].period, "2026-03-29 01:00");
+        assert_eq!(rows[0].agent_hours, 0.5);
+        assert_eq!(rows[1].period, "2026-03-29 03:00");
         assert_eq!(rows[1].agent_hours, 0.5);
     }
 

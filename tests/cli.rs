@@ -5,6 +5,8 @@ fn report_matches_fixture_totals() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -29,6 +31,8 @@ fn report_can_aggregate_the_entire_range() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -50,6 +54,8 @@ fn report_can_aggregate_the_entire_range() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -72,6 +78,8 @@ fn latency_view_groups_by_model() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "latency",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -98,6 +106,8 @@ fn latency_view_aggregates_the_entire_range() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "latency",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -125,6 +135,8 @@ fn workflow_defaults_to_all_periods() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "workflow",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -155,6 +167,8 @@ fn workflow_groups_by_day_and_model() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "workflow",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -185,6 +199,8 @@ fn report_groups_usage_by_effort() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -209,6 +225,8 @@ fn report_groups_usage_by_model_and_effort() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -233,6 +251,8 @@ fn report_emits_telemetry_json_with_structured_dimensions() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
+            "--source",
+            "codex",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--last",
@@ -535,12 +555,10 @@ fn claude_report_groups_by_branch_and_origin() {
 }
 
 #[test]
-fn all_sources_combine_codex_and_claude_usage() {
+fn default_source_combines_codex_and_claude_usage() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
         .args([
             "report",
-            "--source",
-            "all",
             "--rollouts",
             "tests/fixtures/rollouts",
             "--claude-projects",
@@ -564,4 +582,63 @@ fn status_rejects_claude_source() {
         .output()
         .expect("binary should run");
     assert!(!output.status.success());
+}
+
+#[test]
+fn claude_tools_attributes_tool_time_to_build_commands() {
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
+        .args([
+            "tools",
+            "--source",
+            "claude",
+            "--claude-projects",
+            "tests/fixtures/claude",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("binary should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["kind"], "build");
+    assert_eq!(rows[0]["command"], "cargo build");
+    assert_eq!(rows[0]["calls"], 1);
+    assert_eq!(rows[0]["hours"], 2.0 / 3600.0);
+    assert_eq!(rows[0]["share_of_agent_hours"], 2.0 / 35.0);
+}
+
+#[test]
+fn claude_time_partitions_agent_hours() {
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
+        .args([
+            "time",
+            "--source",
+            "claude",
+            "--claude-projects",
+            "tests/fixtures/claude",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("binary should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = rows.as_array().unwrap();
+    let hours: f64 = rows.iter().map(|row| row["hours"].as_f64().unwrap()).sum();
+    assert!((hours - 35.0 / 3600.0).abs() < 1e-12);
+    assert!(rows.iter().any(|row| {
+        row["family"] == "model" && row["kind"] == "tool_call" && row["command"] == "Bash"
+    }));
+    assert!(rows.iter().any(|row| {
+        row["family"] == "tools" && row["kind"] == "build" && row["command"] == "cargo build"
+    }));
 }

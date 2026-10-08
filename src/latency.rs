@@ -37,6 +37,7 @@ pub fn aggregate(
         let local = event.captured_at.with_timezone(&timezone);
         let period_key = match period {
             PeriodGroup::All => "All".to_owned(),
+            PeriodGroup::Hour => local.format("%Y-%m-%d %H:00").to_string(),
             PeriodGroup::Day => local.format("%Y-%m-%d").to_string(),
             PeriodGroup::Week => {
                 let offset = match local.weekday() {
@@ -234,7 +235,7 @@ fn row_values(row: &LatencyRow, include_group: bool) -> Vec<String> {
     values
 }
 
-fn format_optional_duration(value: Option<f64>) -> String {
+pub(crate) fn format_optional_duration(value: Option<f64>) -> String {
     let Some(value) = value else {
         return "-".to_owned();
     };
@@ -247,7 +248,7 @@ fn format_optional_duration(value: Option<f64>) -> String {
     }
 }
 
-fn format_integer(value: u64) -> String {
+pub(crate) fn format_integer(value: u64) -> String {
     let source = value.to_string();
     let mut result = String::with_capacity(source.len() + source.len() / 3);
     for (index, character) in source.chars().enumerate() {

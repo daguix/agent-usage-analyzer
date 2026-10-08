@@ -67,37 +67,40 @@ impl Default for Pricing {
                 }],
             );
         }
-        for (name, input, cache_write_5m, cache_write_1h, cached, output) in [
-            ("claude-fable-5-1", 10.0, 12.5, 20.0, 0.25, 50.0),
-            ("claude-mythos-5-1", 10.0, 12.5, 20.0, 0.25, 50.0),
-            ("claude-fable-5", 10.0, 12.5, 20.0, 1.0, 50.0),
-            ("claude-mythos-5", 10.0, 12.5, 20.0, 1.0, 50.0),
-            ("claude-opus-5-5", 4.0, 5.0, 8.0, 0.2, 20.0),
-            ("claude-opus-5", 5.0, 6.25, 10.0, 0.5, 25.0),
-            ("claude-opus-4-8", 5.0, 6.25, 10.0, 0.5, 25.0),
-            ("claude-opus-4-7", 5.0, 6.25, 10.0, 0.5, 25.0),
-            ("claude-opus-4-6", 5.0, 6.25, 10.0, 0.5, 25.0),
-            ("claude-opus-4-5", 5.0, 6.25, 10.0, 0.5, 25.0),
-            ("claude-opus-4-1", 15.0, 18.75, 30.0, 1.5, 75.0),
-            ("claude-opus-4", 15.0, 18.75, 30.0, 1.5, 75.0),
-            ("claude-sonnet-5-5", 2.0, 2.5, 4.0, 0.2, 10.0),
-            ("claude-sonnet-5", 2.0, 2.5, 4.0, 0.2, 10.0),
-            ("claude-sonnet-4-6", 3.0, 3.75, 6.0, 0.3, 15.0),
-            ("claude-sonnet-4-5", 3.0, 3.75, 6.0, 0.3, 15.0),
-            ("claude-sonnet-4", 3.0, 3.75, 6.0, 0.3, 15.0),
-            ("claude-haiku-4-5", 1.0, 1.25, 2.0, 0.1, 5.0),
-            ("claude-3-5-haiku", 0.8, 1.0, 1.6, 0.08, 4.0),
+        for (name, effective_from, input, cached, output) in [
+            ("claude-fable-5-1", "2026-09-01", 10.0, 0.25, 50.0),
+            ("claude-mythos-5-1", "2026-09-01", 10.0, 0.25, 50.0),
+            ("claude-fable-5", "2026-06-09", 10.0, 1.0, 50.0),
+            ("claude-mythos-5", "2026-06-09", 10.0, 1.0, 50.0),
+            ("claude-opus-5-5", "2026-09-22", 4.0, 0.2, 20.0),
+            ("claude-opus-5", "2026-07-24", 5.0, 0.5, 25.0),
+            ("claude-opus-4-8", "2026-05-28", 5.0, 0.5, 25.0),
+            ("claude-opus-4-7", "2026-04-16", 5.0, 0.5, 25.0),
+            ("claude-opus-4-6", "2026-02-05", 5.0, 0.5, 25.0),
+            ("claude-opus-4-5", "2025-11-24", 5.0, 0.5, 25.0),
+            ("claude-opus-4-1", "2025-08-05", 15.0, 1.5, 75.0),
+            ("claude-opus-4", "2025-05-22", 15.0, 1.5, 75.0),
+            ("claude-sonnet-5-5", "2026-09-28", 2.0, 0.2, 10.0),
+            ("claude-sonnet-5", "2026-06-30", 2.0, 0.2, 10.0),
+            ("claude-sonnet-4-6", "2026-02-17", 3.0, 0.3, 15.0),
+            ("claude-sonnet-4-5", "2025-09-29", 3.0, 0.3, 15.0),
+            ("claude-sonnet-4", "2025-05-22", 3.0, 0.3, 15.0),
+            ("claude-haiku-4-5", "2025-10-15", 1.0, 0.1, 5.0),
+            ("claude-3-5-haiku", "2024-11-04", 0.8, 0.08, 4.0),
+            ("claude-3-7-sonnet", "2025-02-24", 3.0, 0.3, 15.0),
+            ("claude-3-5-sonnet", "2024-06-20", 3.0, 0.3, 15.0),
+            ("claude-3-5-sonnet-20241022", "2024-10-22", 3.0, 0.3, 15.0),
         ] {
             rates.insert(
                 name,
                 vec![PricePeriod {
-                    effective_from: NaiveDate::MIN,
+                    effective_from: NaiveDate::parse_from_str(effective_from, "%Y-%m-%d").unwrap(),
                     rates: Rates {
                         input,
                         cached,
                         output,
-                        cache_write_5m,
-                        cache_write_1h,
+                        cache_write_5m: input * 1.25,
+                        cache_write_1h: input * 2.0,
                     },
                 }],
             );
@@ -143,8 +146,8 @@ impl Default for Pricing {
 impl Pricing {
     pub fn rates_for(&self, model: &str, captured_at: DateTime<Utc>) -> Option<Rates> {
         let cleaned = model.trim();
-        if let Some(rates) = self.rates_at(cleaned, captured_at) {
-            return Some(rates);
+        if self.rates.contains_key(cleaned) {
+            return self.rates_at(cleaned, captured_at);
         }
         if cleaned.ends_with(')')
             && let Some((base, _)) = cleaned.split_once(" (")
@@ -365,6 +368,84 @@ mod tests {
                 (expected, expected)
             );
         }
+    }
+
+    #[test]
+    fn rejects_claude_events_before_release() {
+        let pricing = Pricing::default();
+        for (model, release) in [
+            ("claude-opus-4", "2025-05-22T00:00:00Z"),
+            ("claude-opus-4-5", "2025-11-24T00:00:00Z"),
+            ("claude-haiku-4-5-20251001", "2025-10-15T00:00:00Z"),
+            ("claude-opus-5-5", "2026-09-22T00:00:00Z"),
+            ("claude-fable-5-1", "2026-09-01T00:00:00Z"),
+            ("claude-sonnet-5-5", "2026-09-28T00:00:00Z"),
+        ] {
+            let release = at(release);
+            assert!(
+                pricing
+                    .rates_for(model, release - chrono::Duration::seconds(1))
+                    .is_none(),
+                "{model}"
+            );
+            assert!(pricing.rates_for(model, release).is_some(), "{model}");
+        }
+    }
+
+    #[test]
+    fn preserves_older_claude_versions_and_cancelled_sonnet_increase() {
+        let pricing = Pricing::default();
+        for (model, captured_at, expected) in [
+            (
+                "claude-opus-4-1-20250805",
+                "2026-10-04T00:00:00Z",
+                (15.0, 1.5, 75.0),
+            ),
+            ("claude-opus-4-5", "2025-11-24T00:00:00Z", (5.0, 0.5, 25.0)),
+            (
+                "claude-3-7-sonnet-20250219",
+                "2025-02-24T00:00:00Z",
+                (3.0, 0.3, 15.0),
+            ),
+            ("claude-sonnet-5", "2026-06-30T00:00:00Z", (2.0, 0.2, 10.0)),
+            ("claude-sonnet-5", "2026-09-01T00:00:00Z", (2.0, 0.2, 10.0)),
+            ("claude-fable-5", "2026-09-01T00:00:00Z", (10.0, 1.0, 50.0)),
+            (
+                "claude-fable-5-1",
+                "2026-09-01T00:00:00Z",
+                (10.0, 0.25, 50.0),
+            ),
+        ] {
+            let rates = pricing.rates_for(model, at(captured_at)).unwrap();
+            assert_eq!(
+                (rates.input, rates.cached, rates.output),
+                expected,
+                "{model}"
+            );
+            assert_eq!(rates.cache_write_5m, rates.input * 1.25);
+            assert_eq!(rates.cache_write_1h, rates.input * 2.0);
+        }
+    }
+
+    #[test]
+    fn respects_the_release_of_an_explicit_sonnet_snapshot() {
+        let pricing = Pricing::default();
+        let captured_at = at("2024-10-21T23:59:59Z");
+        assert!(
+            pricing
+                .rates_for("claude-3-5-sonnet-20240620", captured_at)
+                .is_some()
+        );
+        assert!(
+            pricing
+                .rates_for("claude-3-5-sonnet-20241022", captured_at)
+                .is_none()
+        );
+        assert!(
+            pricing
+                .rates_for("claude-3-5-sonnet-20241022", at("2024-10-22T00:00:00Z"))
+                .is_some()
+        );
     }
 
     #[test]

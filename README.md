@@ -36,6 +36,47 @@ September 29, 2026 at $2 input, $0.10 cached input, $2.50 cache writes, and
 $10 output per million tokens, as published in the
 [OpenAI API pricing](https://developers.openai.com/api/docs/pricing).
 
+Claude standard rates start on each model's API release date, using
+00:00 UTC when only a date is published in the
+[Claude Platform release notes](https://platform.claude.com/docs/en/release-notes/overview).
+Events before that date have no price estimate. Retired versions keep their
+historical rates; a newer version's lower price does not change older usage.
+Sonnet 5 remains at $2 / $10: its planned September 1, 2026 increase was
+cancelled on August 10, 2026.
+
+Claude price history (USD per million tokens, standard mode):
+
+| Effective from (UTC) | Model | Input | Cache read | Output |
+| --- | --- | ---: | ---: | ---: |
+| 2024-06-20 | `claude-3-5-sonnet` | $3 | $0.3 | $15 |
+| 2024-10-22 | `claude-3-5-sonnet-20241022` | $3 | $0.3 | $15 |
+| 2024-11-04 | `claude-3-5-haiku` | $0.8 | $0.08 | $4 |
+| 2025-02-24 | `claude-3-7-sonnet` | $3 | $0.3 | $15 |
+| 2025-05-22 | `claude-opus-4` | $15 | $1.5 | $75 |
+| 2025-05-22 | `claude-sonnet-4` | $3 | $0.3 | $15 |
+| 2025-08-05 | `claude-opus-4-1` | $15 | $1.5 | $75 |
+| 2025-09-29 | `claude-sonnet-4-5` | $3 | $0.3 | $15 |
+| 2025-10-15 | `claude-haiku-4-5` | $1 | $0.1 | $5 |
+| 2025-11-24 | `claude-opus-4-5` | $5 | $0.5 | $25 |
+| 2026-02-05 | `claude-opus-4-6` | $5 | $0.5 | $25 |
+| 2026-02-17 | `claude-sonnet-4-6` | $3 | $0.3 | $15 |
+| 2026-04-16 | `claude-opus-4-7` | $5 | $0.5 | $25 |
+| 2026-05-28 | `claude-opus-4-8` | $5 | $0.5 | $25 |
+| 2026-06-09 | `claude-fable-5` | $10 | $1 | $50 |
+| 2026-06-09 | `claude-mythos-5` | $10 | $1 | $50 |
+| 2026-06-30 | `claude-sonnet-5` | $2 | $0.2 | $10 |
+| 2026-07-24 | `claude-opus-5` | $5 | $0.5 | $25 |
+| 2026-09-01 | `claude-fable-5-1` | $10 | $0.25 | $50 |
+| 2026-09-01 | `claude-mythos-5-1` | $10 | $0.25 | $50 |
+| 2026-09-22 | `claude-opus-5-5` | $4 | $0.2 | $20 |
+| 2026-09-28 | `claude-sonnet-5-5` | $2 | $0.2 | $10 |
+
+For these models, 5-minute cache writes cost 1.25 times the input rate and
+1-hour writes cost twice the input rate. Sonnet 3.5 and 3.7 launch prices
+are also documented in the
+[Sonnet 3.5 announcement](https://www.anthropic.com/news/claude-3-5-sonnet)
+and [Sonnet 3.7 announcement](https://www.anthropic.com/news/claude-3-7-sonnet).
+
 ## Build
 
 ```bash
@@ -87,9 +128,9 @@ The default rollout directory is `~/.codex/sessions`. Override it with
 Supported report options include:
 
 - `--today`, `--last`, `--from`, and `--to`
-- `--group all|day|week|month` (default: `all`)
+- `--group all|hour|day|week|month` (default: `all`)
 - `--by model|effort|directory|branch|origin|session`, with comma-separated dimensions such as `--by model,effort`
-- `--source codex|claude|all`
+- `--source codex|claude|all` (default: `all`)
 - `--format table|json|csv|telemetry-json`
 - `--timezone IANA_NAME`
 - `--output PATH`
@@ -107,7 +148,7 @@ fields are emitted in milliseconds in JSON and CSV; the table uses
 human-readable durations. Older rollouts may not contain latency measurements,
 so missing values are excluded from the sample counts and aggregates.
 
-`workflow` accepts the same range, `--group all|day|week|month`,
+`workflow` accepts the same range, `--group all|hour|day|week|month`,
 `--by model|effort|directory|branch|origin|session`, timezone, and
 `--format table|json|csv` options as `latency`. The default grouping is `all`. Agent-hours sum the recorded
 durations of completed turns within each period and group. Active wall-hours
@@ -120,6 +161,36 @@ For Claude Code, tool-hours measure the time between each tool call and its
 result, counting concurrent tool calls once per turn, and tool share is
 tool-hours divided by agent-hours; the remainder is spent generating model
 output. Codex rollouts do not record tool timings, so these columns show `-`.
+
+`tools` accepts the same options as `workflow` and splits Claude Code tool time
+by kind and command, for example `Build` → `cargo build`, `Test` →
+`cargo test`, or `Lint / format` → `cargo clippy`. Kinds are `build`, `test`,
+`lint`, `version_control`, `search_read`, `edit`, `web`, `subagent`,
+`user_input`, `wait`, `mcp`, `shell`, and `other`. A shell command chaining
+several steps is attributed to its most significant one, in the order test,
+build, lint, web, version control, wait, search/read; test runs therefore
+include the compilation they trigger. `Hours` counts concurrent calls of the
+same command once per turn, `Avg call` is the mean duration of the calls
+started in the period, and `Agent-hour share` divides `Hours` by the agent-hours
+of the same period and group. Tool time includes any wait for permission
+approval, and `user_input` covers questions and plan approvals answered by the
+user. Codex rollouts do not record tool timings and produce no rows.
+
+`time` accepts the same options and gives an overview of Claude Code agent time:
+every turn is split into exclusive slices, so the rows add up to the
+agent-hours of `workflow` and to 100% of `Agent-hour share`. `Model response`
+covers response generation, split into `Thinking`, `Text`, and `Tool call
+writing` (by tool, for example the time spent writing the content of `Write`
+or `Edit` calls). Claude Code records one transcript line per content block when
+the block is complete, so the time between the previous event and a block is
+attributed to that block; the first block of each response therefore also
+includes request latency. `Tool execution` uses the same kinds and commands as
+`tools`; while the model is generating, time is attributed to the model, and
+concurrent tool calls share the remaining time equally. `Other` is turn time
+covered by neither. `Count` is the number of blocks or calls started in the
+period and `Avg` their mean duration. The table nests families, kinds, and
+commands with subtotals; JSON and CSV contain the leaf rows with `family`,
+`kind`, and `command` fields.
 
 `branch` is the git branch recorded with each message (Claude Code) or at the
 start of the session (Codex). `origin` describes what started a turn: for Claude
@@ -167,10 +238,16 @@ agent-usage-analyzer report --source all --last 7d --by model
 
 # Claude Code agent-hours, including subagents
 agent-usage-analyzer workflow --source claude --last 7d --group day
+
+# Time spent compiling, testing, and running other tools over seven days
+agent-usage-analyzer tools --source claude --last 7d
+
+# Overview of agent time: thinking, writing, tool execution
+agent-usage-analyzer time --source claude --last 7d
 ```
 
 `--source codex|claude|all` (or `AGENT_USAGE_SOURCE`) selects the session logs
-used by `report`, `latency`, and `workflow`; the default is `codex`. Claude Code
+used by `report`, `latency`, and `workflow`; the default is `all`. Claude Code
 transcripts are read from `$CLAUDE_CONFIG_DIR/projects`, or
 `~/.claude/projects` when that variable is unset. Override the location with
 `--claude-projects PATH` or `AGENT_USAGE_CLAUDE_PROJECTS`. Subagent transcripts
