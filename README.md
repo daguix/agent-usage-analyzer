@@ -12,7 +12,7 @@ or background service required. The optimized Linux x86-64 binary is about
 
 ## Features
 
-- Track Codex token usage and estimated API costs over custom time ranges
+- Track Codex and Claude Code token usage and estimated API costs over custom time ranges
 - Group results by model, reasoning effort, directory, git branch, turn origin, or session
 - Inspect end-to-end latency, time to first token (TTFT), medians, and p95
 - Measure agent-hours, effective parallelism, and time spent in tools from completed turns
@@ -135,6 +135,13 @@ Supported report options include:
 - `--timezone IANA_NAME`
 - `--output PATH`
 
+Reports count only events that consumed tokens, so `Total` is the sum of
+`Input` and `Output`. Codex subagent sessions forked from a parent, such as
+auto-review sessions, start with a snapshot whose total reflects the inherited
+context while its input and output are zero; these snapshots are skipped so
+they neither inflate totals nor appear as an `<unknown>` model. `status` still
+uses them to show context-window occupancy.
+
 `telemetry-json` is available for `report`. It emits a versioned envelope with
 the effective time window, aggregation settings, structured dimensions, and
 numeric usage and cost metrics. Every dimension explicitly selected with
@@ -247,7 +254,8 @@ agent-usage-analyzer time --source claude --last 7d
 ```
 
 `--source codex|claude|all` (or `AGENT_USAGE_SOURCE`) selects the session logs
-used by `report`, `latency`, and `workflow`; the default is `all`. Claude Code
+used by `report`, `latency`, `workflow`, `tools`, and `time`; the default is
+`all`. Claude Code
 transcripts are read from `$CLAUDE_CONFIG_DIR/projects`, or
 `~/.claude/projects` when that variable is unset. Override the location with
 `--claude-projects PATH` or `AGENT_USAGE_CLAUDE_PROJECTS`. Subagent transcripts
