@@ -6,6 +6,7 @@ mod ingest;
 mod latency;
 mod pricing;
 mod report;
+mod sort;
 mod tools;
 mod workflow;
 

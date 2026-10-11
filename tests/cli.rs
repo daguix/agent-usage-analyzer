@@ -642,3 +642,87 @@ fn claude_time_partitions_agent_hours() {
         row["family"] == "tools" && row["kind"] == "build" && row["command"] == "cargo build"
     }));
 }
+
+#[test]
+fn report_sorts_rows_by_requested_column() {
+    let run = |order: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
+            .args([
+                "report",
+                "--source",
+                "codex",
+                "--rollouts",
+                "tests/fixtures/rollouts",
+                "--last",
+                "all",
+                "--by",
+                "model",
+                "--sort",
+                "total",
+                "--order",
+                order,
+                "--format",
+                "json",
+            ])
+            .output()
+            .expect("binary should run");
+        assert!(output.status.success());
+        let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["total_tokens"].as_u64().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(run("desc"), [310, 155]);
+    assert_eq!(run("asc"), [155, 310]);
+}
+
+#[test]
+fn breakdown_sorts_each_tree_level() {
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
+        .args([
+            "breakdown",
+            "--rollouts",
+            "tests/fixtures/breakdown",
+            "--sort",
+            "input",
+            "--format",
+            "csv",
+        ])
+        .output()
+        .expect("binary should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    let paths: Vec<String> = text
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').take(2).collect::<Vec<_>>().join("/"))
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "protocol/",
+            "tool_calls/patch_edit_payload",
+            "tool_calls/other",
+            "tool_calls/patch_edit_envelope",
+            "conversation/user_prompts",
+            "conversation/assistant_text",
+            "tool_outputs/repository_source",
+            "tool_outputs/patch_edit_result",
+        ]
+    );
+}
+
+#[test]
+fn order_requires_sort() {
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-usage-analyzer"))
+        .args(["tools", "--order", "asc"])
+        .output()
+        .expect("binary should run");
+    assert!(!output.status.success());
+}

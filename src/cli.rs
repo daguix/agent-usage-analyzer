@@ -12,6 +12,7 @@ use crate::ingest::{ScanResult, scan_rollouts};
 use crate::latency;
 use crate::pricing::Pricing;
 use crate::report::{self, GroupBy, PeriodGroup, ReportFormat};
+use crate::sort::{self, SortOrder};
 use crate::tools;
 use crate::workflow;
 
@@ -45,9 +46,9 @@ enum Command {
     #[command(
         about = "Show time spent in tool calls by kind and command, such as builds and tests"
     )]
-    Tools(WorkflowArgs),
+    Tools(ToolsArgs),
     #[command(about = "Split agent time into model response, tool execution, and other time")]
-    Time(WorkflowArgs),
+    Time(TimeArgs),
     #[command(about = "Estimate which kinds of content make up model input and cached input")]
     Breakdown(BreakdownArgs),
 }
@@ -129,6 +130,15 @@ struct ReportArgs {
         help = "Output format"
     )]
     format: ReportFormatArg,
+    #[arg(long, value_enum, help = "Column used to sort rows")]
+    sort: Option<report::ReportSortKey>,
+    #[arg(
+        long,
+        value_enum,
+        requires = "sort",
+        help = "Sort direction [default: desc for numeric columns, asc for text]"
+    )]
+    order: Option<SortOrder>,
     #[arg(long, short = 'o', help = "Write output to a file instead of stdout")]
     output: Option<PathBuf>,
 }
@@ -167,12 +177,21 @@ struct LatencyArgs {
         help = "Output format"
     )]
     format: FormatArg,
+    #[arg(long, value_enum, help = "Column used to sort rows")]
+    sort: Option<latency::LatencySortKey>,
+    #[arg(
+        long,
+        value_enum,
+        requires = "sort",
+        help = "Sort direction [default: desc for numeric columns, asc for text]"
+    )]
+    order: Option<SortOrder>,
     #[arg(long, short = 'o', help = "Write output to a file instead of stdout")]
     output: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Args)]
-struct WorkflowArgs {
+struct TimelineArgs {
     #[command(flatten)]
     source: SourceArgs,
     #[command(flatten)]
@@ -198,6 +217,51 @@ struct WorkflowArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+struct WorkflowArgs {
+    #[command(flatten)]
+    timeline: TimelineArgs,
+    #[arg(long, value_enum, help = "Column used to sort rows")]
+    sort: Option<workflow::WorkflowSortKey>,
+    #[arg(
+        long,
+        value_enum,
+        requires = "sort",
+        help = "Sort direction [default: desc for numeric columns, asc for text]"
+    )]
+    order: Option<SortOrder>,
+}
+
+#[derive(Clone, Debug, Args)]
+struct ToolsArgs {
+    #[command(flatten)]
+    timeline: TimelineArgs,
+    #[arg(long, value_enum, help = "Column used to sort rows")]
+    sort: Option<tools::ToolSortKey>,
+    #[arg(
+        long,
+        value_enum,
+        requires = "sort",
+        help = "Sort direction [default: desc for numeric columns, asc for text]"
+    )]
+    order: Option<SortOrder>,
+}
+
+#[derive(Clone, Debug, Args)]
+struct TimeArgs {
+    #[command(flatten)]
+    timeline: TimelineArgs,
+    #[arg(long, value_enum, help = "Column used to sort rows")]
+    sort: Option<activity::ActivitySortKey>,
+    #[arg(
+        long,
+        value_enum,
+        requires = "sort",
+        help = "Sort direction [default: desc for numeric columns, asc for text]"
+    )]
+    order: Option<SortOrder>,
+}
+
+#[derive(Clone, Debug, Args)]
 #[command(mut_arg("source", |arg| arg.default_value("codex")))]
 struct BreakdownArgs {
     #[command(flatten)]
@@ -211,6 +275,15 @@ struct BreakdownArgs {
         help = "Output format"
     )]
     format: FormatArg,
+    #[arg(long, value_enum, help = "Column used to sort rows")]
+    sort: Option<breakdown::BreakdownSortKey>,
+    #[arg(
+        long,
+        value_enum,
+        requires = "sort",
+        help = "Sort direction [default: desc for numeric columns, asc for text]"
+    )]
+    order: Option<SortOrder>,
     #[arg(long, short = 'o', help = "Write output to a file instead of stdout")]
     output: Option<PathBuf>,
 }
@@ -319,12 +392,18 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn run_workflow(args: WorkflowArgs) -> Result<()> {
+fn run_workflow(
+    WorkflowArgs {
+        timeline: args,
+        sort: sort_key,
+        order,
+    }: WorkflowArgs,
+) -> Result<()> {
     let timezone = parse_timezone(&args.source.timezone)?;
     let (start, end) = resolve_range(&args.range, timezone)?;
     let scan = scan(&args.source)?;
     emit_scan_warnings(&scan);
-    let rows = workflow::aggregate(
+    let mut rows = workflow::aggregate(
         scan.latencies,
         start,
         end,
@@ -332,6 +411,9 @@ fn run_workflow(args: WorkflowArgs) -> Result<()> {
         args.group.period(),
         &group_by(&args.by),
     );
+    if let Some(key) = sort_key {
+        sort::sort_rows(&mut rows, key, order);
+    }
     let output = workflow::render(
         &rows,
         match args.format {
@@ -349,12 +431,18 @@ fn run_workflow(args: WorkflowArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_tools(args: WorkflowArgs) -> Result<()> {
+fn run_tools(
+    ToolsArgs {
+        timeline: args,
+        sort: sort_key,
+        order,
+    }: ToolsArgs,
+) -> Result<()> {
     let timezone = parse_timezone(&args.source.timezone)?;
     let (start, end) = resolve_range(&args.range, timezone)?;
     let scan = scan(&args.source)?;
     emit_scan_warnings(&scan);
-    let rows = tools::aggregate(
+    let mut rows = tools::aggregate(
         scan.latencies,
         start,
         end,
@@ -362,6 +450,9 @@ fn run_tools(args: WorkflowArgs) -> Result<()> {
         args.group.period(),
         &group_by(&args.by),
     );
+    if let Some(key) = sort_key {
+        sort::sort_rows(&mut rows, key, order);
+    }
     let output = tools::render(
         &rows,
         match args.format {
@@ -379,12 +470,18 @@ fn run_tools(args: WorkflowArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_time(args: WorkflowArgs) -> Result<()> {
+fn run_time(
+    TimeArgs {
+        timeline: args,
+        sort: sort_key,
+        order,
+    }: TimeArgs,
+) -> Result<()> {
     let timezone = parse_timezone(&args.source.timezone)?;
     let (start, end) = resolve_range(&args.range, timezone)?;
     let scan = scan(&args.source)?;
     emit_scan_warnings(&scan);
-    let rows = activity::aggregate(
+    let mut rows = activity::aggregate(
         scan.latencies,
         start,
         end,
@@ -392,6 +489,9 @@ fn run_time(args: WorkflowArgs) -> Result<()> {
         args.group.period(),
         &group_by(&args.by),
     );
+    if let Some(key) = sort_key {
+        activity::sort(&mut rows, key, order);
+    }
     let output = activity::render(
         &rows,
         match args.format {
@@ -418,7 +518,10 @@ fn run_latency(args: LatencyArgs) -> Result<()> {
         start.is_none_or(|start| event.captured_at >= start)
             && end.is_none_or(|end| event.captured_at <= end)
     });
-    let rows = latency::aggregate(events, args.group.period(), &group_by(&args.by), timezone);
+    let mut rows = latency::aggregate(events, args.group.period(), &group_by(&args.by), timezone);
+    if let Some(key) = args.sort {
+        sort::sort_rows(&mut rows, key, args.order);
+    }
     let output = latency::render(
         &rows,
         !args.by.is_empty(),
@@ -446,8 +549,11 @@ fn run_breakdown(args: BreakdownArgs) -> Result<()> {
         .rollouts
         .clone()
         .unwrap_or_else(default_rollouts_dir);
-    let result = breakdown::analyze(&root, start, end)
+    let mut result = breakdown::analyze(&root, start, end)
         .with_context(|| format!("failed to scan {}", root.display()))?;
+    if let Some(key) = args.sort {
+        breakdown::sort(&mut result.rows, key, args.order);
+    }
     if result.invalid_lines > 0 {
         eprintln!(
             "warning: ignored {} malformed JSONL line(s) across {} rollout file(s)",
@@ -554,53 +660,34 @@ struct BreakdownTreeRow {
 }
 
 fn breakdown_tree_rows(result: &breakdown::Breakdown) -> Vec<BreakdownTreeRow> {
-    use std::collections::BTreeMap;
-
-    let mut families = BTreeMap::<breakdown::Family, BreakdownMetrics>::new();
-    let mut kinds = BTreeMap::<(breakdown::Family, breakdown::Kind), BreakdownMetrics>::new();
-    for row in &result.rows {
-        families
-            .entry(row.category.family)
-            .or_default()
-            .add_row(row);
-        if let Some(kind) = row.category.kind {
-            kinds
-                .entry((row.category.family, kind))
-                .or_default()
-                .add_row(row);
-        }
-    }
-
+    let total = |rows: &[breakdown::BreakdownRow]| {
+        let mut metrics = BreakdownMetrics::default();
+        rows.iter().for_each(|row| metrics.add_row(row));
+        metrics
+    };
     let mut tree = Vec::new();
-    for (family, metrics) in families {
+    for family_rows in result
+        .rows
+        .chunk_by(|left, right| left.category.family == right.category.family)
+    {
         tree.push(BreakdownTreeRow {
-            label: family.label().to_owned(),
-            metrics,
+            label: family_rows[0].category.family.label().to_owned(),
+            metrics: total(family_rows),
         });
-        for ((_, kind), metrics) in kinds
-            .iter()
-            .filter(|((kind_family, _), _)| *kind_family == family)
+        for kind_rows in
+            family_rows.chunk_by(|left, right| left.category.kind == right.category.kind)
         {
+            let Some(kind) = kind_rows[0].category.kind else {
+                continue;
+            };
             tree.push(BreakdownTreeRow {
                 label: format!("  {}", kind.label()),
-                metrics: *metrics,
+                metrics: total(kind_rows),
             });
-            for row in result.rows.iter().filter(|row| {
-                row.category.family == family
-                    && row.category.kind == Some(*kind)
-                    && row.category.source.is_some()
-            }) {
+            for row in kind_rows.iter().filter(|row| row.category.source.is_some()) {
                 tree.push(BreakdownTreeRow {
                     label: format!("    {}", row.category.leaf_label()),
-                    metrics: BreakdownMetrics {
-                        input: row.estimated_input_tokens,
-                        cached_input: row.estimated_cached_input_tokens,
-                        output: row.estimated_output_tokens,
-                        reasoning_output: row.reasoning_output_tokens,
-                        code_input: row.estimated_code_input_tokens,
-                        cached_code_input: row.estimated_cached_code_input_tokens,
-                        code_output: row.estimated_code_output_tokens,
-                    },
+                    metrics: total(std::slice::from_ref(row)),
                 });
             }
         }
@@ -717,13 +804,16 @@ fn run_report(args: ReportArgs) -> Result<()> {
         .collect::<Vec<_>>();
     let window_start = start.or_else(|| events.iter().map(|event| event.captured_at).min());
     let window_end = end.or_else(|| events.iter().map(|event| event.captured_at).max());
-    let rows = report::aggregate(
+    let mut rows = report::aggregate(
         events.into_iter(),
         args.group.period(),
         &group_by(&args.by),
         timezone,
         &Pricing::default(),
     );
+    if let Some(key) = args.sort {
+        sort::sort_rows(&mut rows, key, args.order);
+    }
     let output = match args.format {
         ReportFormatArg::TelemetryJson => {
             let dimensions = args.by.iter().map(GroupArg::name).collect::<Vec<_>>();

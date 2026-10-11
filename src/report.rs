@@ -3,10 +3,12 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Utc, Weekday};
 use chrono_tz::Tz;
+use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::ingest::{RateLimitWindow, UsageEvent};
 use crate::pricing::Pricing;
+use crate::sort::{SortValue, Sortable};
 
 #[derive(Clone, Copy, Debug)]
 pub enum PeriodGroup {
@@ -51,6 +53,46 @@ pub struct ReportRow {
     pub cache_write_cost: f64,
     #[serde(skip)]
     pub dimensions: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ReportSortKey {
+    Period,
+    Group,
+    Total,
+    Input,
+    Cached,
+    CacheWrite,
+    Output,
+    Reasoning,
+    InputCost,
+    CachedCost,
+    CacheWriteCost,
+    OutputCost,
+    Cost,
+}
+
+impl Sortable for ReportRow {
+    type Key = ReportSortKey;
+
+    fn sort_value(&self, key: ReportSortKey) -> SortValue<'_> {
+        let number = |value: f64| SortValue::Number(Some(value));
+        match key {
+            ReportSortKey::Period => SortValue::Text(&self.period),
+            ReportSortKey::Group => SortValue::Text(&self.group),
+            ReportSortKey::Total => number(self.total_tokens as f64),
+            ReportSortKey::Input => number(self.input_tokens as f64),
+            ReportSortKey::Cached => number(self.cached_input_tokens as f64),
+            ReportSortKey::CacheWrite => number(self.cache_write_tokens as f64),
+            ReportSortKey::Output => number(self.output_tokens as f64),
+            ReportSortKey::Reasoning => number(self.reasoning_output_tokens as f64),
+            ReportSortKey::InputCost => number(self.input_cost),
+            ReportSortKey::CachedCost => number(self.cached_input_cost),
+            ReportSortKey::CacheWriteCost => number(self.cache_write_cost),
+            ReportSortKey::OutputCost => number(self.output_cost),
+            ReportSortKey::Cost => number(self.estimated_cost),
+        }
+    }
 }
 
 #[derive(Serialize)]

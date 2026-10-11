@@ -4,12 +4,14 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
+use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::ingest::LatencyEvent;
 use crate::latency::{format_integer, format_optional_duration};
 use crate::report::{GroupBy, PeriodGroup, ReportFormat};
+use crate::sort::{SortValue, Sortable};
 use crate::workflow::{group_label, period_key, period_segments};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -279,6 +281,35 @@ pub struct ToolRow {
     pub hours: f64,
     pub average_call_ms: Option<f64>,
     pub share_of_agent_hours: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ToolSortKey {
+    Period,
+    Group,
+    Kind,
+    Command,
+    Calls,
+    Hours,
+    Avg,
+    Share,
+}
+
+impl Sortable for ToolRow {
+    type Key = ToolSortKey;
+
+    fn sort_value(&self, key: ToolSortKey) -> SortValue<'_> {
+        match key {
+            ToolSortKey::Period => SortValue::Text(&self.period),
+            ToolSortKey::Group => SortValue::Text(&self.group),
+            ToolSortKey::Kind => SortValue::Text(self.kind.label()),
+            ToolSortKey::Command => SortValue::Text(&self.command),
+            ToolSortKey::Calls => SortValue::Number(Some(self.calls as f64)),
+            ToolSortKey::Hours => SortValue::Number(Some(self.hours)),
+            ToolSortKey::Avg => SortValue::Number(self.average_call_ms),
+            ToolSortKey::Share => SortValue::Number(self.share_of_agent_hours),
+        }
+    }
 }
 
 #[derive(Default)]

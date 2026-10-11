@@ -1,14 +1,15 @@
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
+use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::ingest::LatencyEvent;
 use crate::latency::{format_integer, format_optional_duration};
 use crate::report::{GroupBy, PeriodGroup, ReportFormat};
+use crate::sort::{SortOrder, SortValue, compare};
 use crate::tools::ToolKind;
 use crate::workflow::{group_label, period_key, period_segments};
 
@@ -89,6 +90,14 @@ pub struct ActivityRow {
     pub hours: f64,
     pub average_ms: Option<f64>,
     pub share_of_agent_hours: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ActivitySortKey {
+    Hours,
+    Count,
+    Avg,
+    Share,
 }
 
 #[derive(Default)]
@@ -226,62 +235,61 @@ pub fn aggregate(
             }
         }
     }
-    let mut kind_ms = BTreeMap::<(String, String, Family, Option<Kind>), f64>::new();
-    for ((period, group, activity), totals) in &entries {
-        *kind_ms
-            .entry((
-                period.clone(),
-                group.clone(),
-                activity.family,
-                activity.kind,
-            ))
-            .or_default() += totals.ms;
-    }
-    let mut rows: Vec<(f64, ActivityRow)> = entries
+    let mut rows: Vec<ActivityRow> = entries
         .into_iter()
         .map(|((period, group, activity), totals)| {
             let agent = agent_ms
                 .get(&(period.clone(), group.clone()))
                 .copied()
                 .unwrap_or_default();
-            let kind_total = kind_ms[&(
-                period.clone(),
-                group.clone(),
-                activity.family,
-                activity.kind,
-            )];
             let counted = activity.family != Family::Other;
-            (
-                kind_total,
-                ActivityRow {
-                    hours: totals.ms / 3_600_000.0,
-                    count: counted.then_some(totals.count),
-                    average_ms: (counted && totals.count > 0)
-                        .then(|| totals.raw_ms as f64 / totals.count as f64),
-                    share_of_agent_hours: (agent > 0.0).then(|| totals.ms / agent),
-                    period,
-                    group,
-                    family: activity.family,
-                    kind: activity.kind,
-                    command: activity.command,
-                },
-            )
+            ActivityRow {
+                hours: totals.ms / 3_600_000.0,
+                count: counted.then_some(totals.count),
+                average_ms: (counted && totals.count > 0)
+                    .then(|| totals.raw_ms as f64 / totals.count as f64),
+                share_of_agent_hours: (agent > 0.0).then(|| totals.ms / agent),
+                period,
+                group,
+                family: activity.family,
+                kind: activity.kind,
+                command: activity.command,
+            }
         })
         .collect();
-    rows.sort_by(|(left_kind, left), (right_kind, right)| {
-        (&left.period, &left.group, left.family)
-            .cmp(&(&right.period, &right.group, right.family))
-            .then_with(|| right_kind.partial_cmp(left_kind).unwrap_or(Ordering::Equal))
-            .then_with(|| left.kind.cmp(&right.kind))
-            .then_with(|| {
-                right
-                    .hours
-                    .partial_cmp(&left.hours)
-                    .unwrap_or(Ordering::Equal)
-            })
-            .then_with(|| left.command.cmp(&right.command))
-    });
-    rows.into_iter().map(|(_, row)| row).collect()
+    sort(&mut rows, ActivitySortKey::Hours, None);
+    rows
+}
+
+pub fn sort(rows: &mut Vec<ActivityRow>, key: ActivitySortKey, order: Option<SortOrder>) {
+    let mut kinds = BTreeMap::<(String, String, Family, Option<Kind>), Line>::new();
+    for row in rows.iter() {
+        kinds
+            .entry((row.period.clone(), row.group.clone(), row.family, row.kind))
+            .or_insert_with(|| Line::new(row, String::new()))
+            .add(row);
+    }
+    let mut keyed: Vec<_> = std::mem::take(rows)
+        .into_iter()
+        .map(|row| {
+            let kind = kinds[&(row.period.clone(), row.group.clone(), row.family, row.kind)]
+                .sort_value(key);
+            let mut line = Line::new(&row, String::new());
+            line.add(&row);
+            (kind, line.sort_value(key), row)
+        })
+        .collect();
+    keyed.sort_by(
+        |(left_kind, left_value, left), (right_kind, right_value, right)| {
+            (&left.period, &left.group, left.family)
+                .cmp(&(&right.period, &right.group, right.family))
+                .then_with(|| compare(left_kind, right_kind, order))
+                .then_with(|| left.kind.cmp(&right.kind))
+                .then_with(|| compare(left_value, right_value, order))
+                .then_with(|| left.command.cmp(&right.command))
+        },
+    );
+    rows.extend(keyed.into_iter().map(|(_, _, row)| row));
 }
 
 pub fn render(rows: &[ActivityRow], format: ReportFormat) -> Result<String> {
@@ -359,6 +367,18 @@ impl Line {
         if let Some(share) = row.share_of_agent_hours {
             *self.share.get_or_insert(0.0) += share;
         }
+    }
+
+    fn sort_value(&self, key: ActivitySortKey) -> SortValue<'static> {
+        SortValue::Number(match key {
+            ActivitySortKey::Hours => Some(self.hours),
+            ActivitySortKey::Count => self.count.map(|count| count as f64),
+            ActivitySortKey::Avg => self
+                .count
+                .filter(|count| *count > 0)
+                .map(|count| self.raw_ms / count as f64),
+            ActivitySortKey::Share => self.share,
+        })
     }
 
     fn values(&self) -> [String; 7] {

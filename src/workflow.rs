@@ -3,10 +3,12 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
+use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::ingest::LatencyEvent;
 use crate::report::{GroupBy, PeriodGroup, ReportFormat};
+use crate::sort::{SortValue, Sortable};
 
 #[derive(Debug, Serialize)]
 pub struct WorkflowRow {
@@ -17,6 +19,33 @@ pub struct WorkflowRow {
     pub effective_parallelism: f64,
     pub tool_hours: Option<f64>,
     pub tool_share: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum WorkflowSortKey {
+    Period,
+    Group,
+    AgentHours,
+    ActiveHours,
+    Parallelism,
+    ToolHours,
+    ToolShare,
+}
+
+impl Sortable for WorkflowRow {
+    type Key = WorkflowSortKey;
+
+    fn sort_value(&self, key: WorkflowSortKey) -> SortValue<'_> {
+        match key {
+            WorkflowSortKey::Period => SortValue::Text(&self.period),
+            WorkflowSortKey::Group => SortValue::Text(&self.group),
+            WorkflowSortKey::AgentHours => SortValue::Number(Some(self.agent_hours)),
+            WorkflowSortKey::ActiveHours => SortValue::Number(Some(self.wall_clock_active_hours)),
+            WorkflowSortKey::Parallelism => SortValue::Number(Some(self.effective_parallelism)),
+            WorkflowSortKey::ToolHours => SortValue::Number(self.tool_hours),
+            WorkflowSortKey::ToolShare => SortValue::Number(self.tool_share),
+        }
+    }
 }
 
 #[derive(Default)]

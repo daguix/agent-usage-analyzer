@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use clap::ValueEnum;
 use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::Value;
 use walkdir::WalkDir;
+
+use crate::sort::{SortOrder, directed};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -285,6 +288,69 @@ pub struct BreakdownRow {
     pub cached_percent: f64,
     pub output_percent: f64,
     pub reasoning_percent: f64,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum BreakdownSortKey {
+    Category,
+    Input,
+    Cached,
+    Output,
+    Reasoning,
+    CodeInput,
+    CachedCodeInput,
+    CodeOutput,
+}
+
+impl BreakdownRow {
+    fn sort_value(&self, key: BreakdownSortKey) -> u64 {
+        match key {
+            BreakdownSortKey::Category => 0,
+            BreakdownSortKey::Input => self.estimated_input_tokens,
+            BreakdownSortKey::Cached => self.estimated_cached_input_tokens,
+            BreakdownSortKey::Output => self.estimated_output_tokens,
+            BreakdownSortKey::Reasoning => self.reasoning_output_tokens,
+            BreakdownSortKey::CodeInput => self.estimated_code_input_tokens,
+            BreakdownSortKey::CachedCodeInput => self.estimated_cached_code_input_tokens,
+            BreakdownSortKey::CodeOutput => self.estimated_code_output_tokens,
+        }
+    }
+}
+
+pub fn sort(rows: &mut [BreakdownRow], key: BreakdownSortKey, order: Option<SortOrder>) {
+    if let BreakdownSortKey::Category = key {
+        let order = order.unwrap_or(SortOrder::Asc);
+        rows.sort_by(|left, right| directed(left.category.cmp(&right.category), order));
+        return;
+    }
+    let order = order.unwrap_or(SortOrder::Desc);
+    let mut families = BTreeMap::<Family, u64>::new();
+    let mut kinds = BTreeMap::<(Family, Option<Kind>), u64>::new();
+    for row in rows.iter() {
+        let value = row.sort_value(key);
+        *families.entry(row.category.family).or_default() += value;
+        *kinds
+            .entry((row.category.family, row.category.kind))
+            .or_default() += value;
+    }
+    rows.sort_by(|left, right| {
+        let (left_path, right_path) = (left.category, right.category);
+        directed(
+            families[&left_path.family].cmp(&families[&right_path.family]),
+            order,
+        )
+        .then_with(|| left_path.family.cmp(&right_path.family))
+        .then_with(|| {
+            directed(
+                kinds[&(left_path.family, left_path.kind)]
+                    .cmp(&kinds[&(right_path.family, right_path.kind)]),
+                order,
+            )
+        })
+        .then_with(|| left_path.kind.cmp(&right_path.kind))
+        .then_with(|| directed(left.sort_value(key).cmp(&right.sort_value(key)), order))
+        .then_with(|| left_path.cmp(&right_path))
+    });
 }
 
 #[derive(Debug, Default, Serialize)]

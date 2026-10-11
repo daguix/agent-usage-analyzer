@@ -3,10 +3,12 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use chrono::{Datelike, Weekday};
 use chrono_tz::Tz;
+use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::ingest::LatencyEvent;
 use crate::report::{GroupBy, PeriodGroup, ReportFormat};
+use crate::sort::{SortValue, Sortable};
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct LatencyRow {
@@ -24,6 +26,40 @@ pub struct LatencyRow {
     duration_values: Vec<u64>,
     #[serde(skip)]
     ttft_values: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum LatencySortKey {
+    Period,
+    Group,
+    DurationSamples,
+    DurationAvg,
+    DurationP50,
+    DurationP95,
+    TtftSamples,
+    TtftAvg,
+    TtftP50,
+    TtftP95,
+}
+
+impl Sortable for LatencyRow {
+    type Key = LatencySortKey;
+
+    fn sort_value(&self, key: LatencySortKey) -> SortValue<'_> {
+        let integer = |value: Option<u64>| SortValue::Number(value.map(|value| value as f64));
+        match key {
+            LatencySortKey::Period => SortValue::Text(&self.period),
+            LatencySortKey::Group => SortValue::Text(&self.group),
+            LatencySortKey::DurationSamples => integer(Some(self.duration_samples)),
+            LatencySortKey::DurationAvg => SortValue::Number(self.average_duration_ms),
+            LatencySortKey::DurationP50 => integer(self.p50_duration_ms),
+            LatencySortKey::DurationP95 => integer(self.p95_duration_ms),
+            LatencySortKey::TtftSamples => integer(Some(self.ttft_samples)),
+            LatencySortKey::TtftAvg => SortValue::Number(self.average_ttft_ms),
+            LatencySortKey::TtftP50 => integer(self.p50_ttft_ms),
+            LatencySortKey::TtftP95 => integer(self.p95_ttft_ms),
+        }
+    }
 }
 
 pub fn aggregate(

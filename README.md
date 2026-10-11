@@ -134,6 +134,21 @@ Supported report options include:
 - `--format table|json|csv|telemetry-json`
 - `--timezone IANA_NAME`
 - `--output PATH`
+- `--sort COLUMN` and `--order asc|desc`
+
+`--sort` is available on `report`, `latency`, `workflow`, `tools`, `time`, and
+`breakdown`; `--help` on each command lists its columns, for example
+`report --sort cost`, `latency --sort duration-p95`, `workflow --sort
+parallelism`, or `tools --sort calls`. Numeric columns sort in descending order
+and text columns in ascending order unless `--order` is given; rows without a
+value come last. Without `--sort`, each command keeps its default order. Sorting
+applies across all rows, periods included, and does not change the `Total` row.
+For the hierarchical `time` and `breakdown` tables, each level is sorted by its
+own subtotal: kinds within a family, then commands or sources within a kind.
+`time` keeps its families in the fixed order model response, tool execution,
+other, and accepts `hours`, `count`, `avg`, and `share`; `breakdown` also sorts
+its families and accepts `category` (the default order) or a token column such
+as `input`, `cached`, or `code-input`.
 
 Reports count only events that consumed tokens, so `Total` is the sum of
 `Input` and `Output`. Codex subagent sessions forked from a parent, such as
@@ -248,6 +263,9 @@ agent-usage-analyzer workflow --source claude --last 7d --group day
 
 # Time spent compiling, testing, and running other tools over seven days
 agent-usage-analyzer tools --source claude --last 7d
+
+# Most frequently launched commands first
+agent-usage-analyzer tools --source claude --last 7d --sort calls
 
 # Overview of agent time: thinking, writing, tool execution
 agent-usage-analyzer time --source claude --last 7d
